@@ -191,6 +191,34 @@ function rebalance(note){
   return true;
 }
 
+/* ---------- ajustements proposés par Claude (lien ou code) ---------- */
+let PENDING=null;
+function parseMaj(str){
+  str=String(str||'').trim();
+  const m=str.match(/maj=([^&\s#]+)/);if(m)str=decodeURIComponent(m[1]);
+  str=str.replace(/^PM:/i,'');
+  const pct={};let inv=null,ok=false;
+  str.split(/[;,]/).forEach(p=>{const [k,v]=p.split(/[:=]/).map(x=>x&&x.trim());const n=num(v);if(!k||!isFinite(n)||n<0)return;
+    if(k==='invest'||k==='inv'){inv=n;ok=true}else if(S.objets.some(o=>o.id===k)){pct[k]=n;ok=true}});
+  return ok?{pct,inv}:null;
+}
+function pendingHTML(){
+  if(!PENDING)return '';
+  const rows=S.objets.filter(o=>o.id in PENDING.pct).map(o=>`<tr><td>${esc(o.nom)}</td><td class="mut">${+o.pct}%</td><td>→ <b>${PENDING.pct[o.id]}%</b></td></tr>`).join('');
+  return `<div class="card alert info"><b>🤖 Ajustement proposé par Claude</b>
+  <table class="sugg">${rows}${PENDING.inv!=null?`<tr><td>Investissement</td><td class="mut">${S.investPct}%</td><td>→ <b>${PENDING.inv}%</b></td></tr>`:''}</table>
+  <label class="chk"><input type="checkbox" id="pReeq" checked> Appliquer aussi à l'argent disponible maintenant</label>
+  <div class="o3"><button class="btn sm" onclick="applyPending()">Appliquer</button><button class="btn sm sec" onclick="PENDING=null;render()">Refuser</button></div></div>`;
+}
+function applyPending(){
+  if(!PENDING)return;
+  for(const id in PENDING.pct){const o=objById(id);if(o)o.pct=PENDING.pct[id]}
+  if(PENDING.inv!=null)S.investPct=PENDING.inv;
+  if($('#pReeq')&&$('#pReeq').checked)rebalance("Rééquilibrage (ajustement Claude)");
+  S.lastAdjust=Date.now();PENDING=null;save();toast('Ajustement appliqué ✔');render();
+}
+function useCode(){const p=parseMaj($('#majCode').value);if(!p){toast('Code non reconnu');return}PENDING=p;go('home')}
+
 /* ---------- interface ---------- */
 let tab='home';
 function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('show');clearTimeout(toast._t);toast._t=setTimeout(()=>t.classList.remove('show'),2600)}
@@ -222,7 +250,8 @@ function homeHTML(){
   <div class="grid2"><div class="mini"><span class="mut">Investissement</span><b>${fmt(c.invest)}</b></div>
   <div class="mini"><span class="mut">Tu tiens ≈</span><b>${isFinite(jours)?Math.max(0,Math.floor(jours))+' jours':'—'}</b><span class="mut">${pd.est?'estimation':fmt(pd.v)+'/jour'}</span></div></div>
   ${c.dette>0.0005?`<div class="mini" style="margin-top:8px"><span class="mut">Dette d'urgence à rembourser</span><b>${fmt(c.dette)}</b><span class="mut">+${S.investPct+S.refundPct>0?S.refundPct:0}% prélevés à chaque revenu</span></div>`:''}</div>`;
-  const sug=suggestion();
+  h=pendingHTML()+h;
+  const sug=PENDING?null:suggestion();
   if(sug)h+=`<div class="card alert info"><b>📈 Suggestion après 7 jours</b><div class="mut">D'après ta vraie consommation :</div>
     <table class="sugg">${sug.map(x=>`<tr><td>${esc(x.nom)}</td><td class="mut">${x.cur}%</td><td>→ <b>${x.sug}%</b></td></tr>`).join('')}</table>
     <label class="chk"><input type="checkbox" id="sugReeq" checked> Appliquer aussi à l'argent disponible maintenant</label>
@@ -389,8 +418,8 @@ function exportText(){
   L.push('EXPORT POCKET MONEY — '+new Date().toLocaleString('fr-FR'));
   L.push(`Paramètres : investissement ${S.investPct}% · remboursement urgences ${S.refundPct}% · économies de départ ${fmt(S.investInit)}`);
   L.push(`Disponible : ${fmt(c.dispo)} · Investissement : ${fmt(c.invest)} · Dette urgences : ${fmt(c.dette)}`);
-  L.push('','OBJETS (nom | priorité | % | alloué | dépensé | reste | échéance/objectif)');
-  S.objets.forEach(o=>L.push(`- ${o.nom} | P${o.prio} | ${o.pct}% | ${fmt(c.alloue[o.id])} | ${fmt(c.dep[o.id])} | ${fmt(c.eff[o.id])}${o.echeance?' | éch. '+o.echeance:''}${+o.cible>0?' | obj. '+fmt(o.cible):''}`));
+  L.push('','OBJETS ([id] nom | priorité | % | alloué | dépensé | reste | échéance/objectif)');
+  S.objets.forEach(o=>L.push(`- [${o.id}] ${o.nom} | P${o.prio} | ${o.pct}% | ${fmt(c.alloue[o.id])} | ${fmt(c.dep[o.id])} | ${fmt(c.eff[o.id])}${o.echeance?' | éch. '+o.echeance:''}${+o.cible>0?' | obj. '+fmt(o.cible):''}`));
   L.push('','HISTORIQUE (date | type | objet | montant | budget | note)');
   [...S.tx].sort((a,b)=>a.ts-b.ts).forEach(t=>{
     if(t.type==='reeq'){L.push(`${t.date} | rééquilibrage | — | — | budget | ${t.note||''}`);return}
@@ -404,7 +433,8 @@ function exportText(){
 let resetArm=false;
 function setHTML(){
   const sum=sumPct(S),tot=sum+(+S.investPct);
-  let h=`<div class="card"><b>Investissement</b><div class="o3"><div><label>% de chaque revenu</label><input id="sInv" inputmode="decimal" value="${S.investPct}"></div><div><label>% remboursement urgence</label><input id="sRef" inputmode="decimal" value="${S.refundPct}"></div></div>
+  let h=`<div class="card"><b>🤖 Code d'ajustement de Claude</b><div class="mut">Colle ici le code que Claude t'a donné (ou ouvre directement son lien).</div><input id="majCode" placeholder="PM:transport=44;repas=24;…"><button class="btn sm" onclick="useCode()">Voir l'ajustement</button></div>
+  <div class="card"><b>Investissement</b><div class="o3"><div><label>% de chaque revenu</label><input id="sInv" inputmode="decimal" value="${S.investPct}"></div><div><label>% remboursement urgence</label><input id="sRef" inputmode="decimal" value="${S.refundPct}"></div></div>
   <label>Économies de départ (boîte) (dt)</label><input id="sInit" inputmode="decimal" value="${S.investInit}"></div>
   <h2>Objets</h2><div class="mut" style="margin:0 4px">Total objets ${sum}% + investissement ${S.investPct}% = <b style="color:${Math.abs(tot-100)<0.01?'var(--ok)':'var(--warn)'}">${tot}%</b>${Math.abs(tot-100)<0.01?' ✔':' (idéalement 100 %)'}</div>`;
   S.objets.forEach((o,i)=>{
@@ -452,6 +482,7 @@ function resetAll(){if(!resetArm){resetArm=true;render();setTimeout(()=>{resetAr
 if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
 S=load()||initial();
 save();
+try{const q=new URLSearchParams(location.search).get('maj');if(q){PENDING=parseMaj('maj='+encodeURIComponent(q));history.replaceState(null,'',location.pathname)}}catch(e){}
 render();
 </script>
 </body>
