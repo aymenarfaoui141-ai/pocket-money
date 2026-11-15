@@ -71,6 +71,13 @@ table{width:100%;border-collapse:collapse;font-size:14px}
 .o3{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 #toast{position:fixed;left:50%;bottom:92px;transform:translateX(-50%);background:#111;color:#fff;padding:10px 16px;border-radius:12px;opacity:0;transition:opacity .25s;pointer-events:none;max-width:90%;text-align:center;z-index:9;font-size:14px}
 #toast.show{opacity:1}
+#lock{position:fixed;inset:0;background:var(--bg);z-index:20;display:flex;align-items:center;justify-content:center}
+.lockin{display:flex;flex-direction:column;align-items:center;padding:20px}
+.dots{display:flex;gap:14px;margin:22px 0}.dots i{width:14px;height:14px;border-radius:50%;border:2px solid var(--ac)}.dots i.on{background:var(--ac)}
+.shake{animation:sh .35s}@keyframes sh{25%{transform:translateX(-8px)}75%{transform:translateX(8px)}}
+.pad{display:grid;grid-template-columns:repeat(3,72px);gap:14px}
+.pad button{height:72px;border-radius:50%;border:1px solid var(--line);background:var(--card);color:var(--tx);font:inherit;font-size:24px;font-weight:600}
+.lnk{background:none;border:0;color:var(--ac);font:inherit;margin:18px 0 8px}
 [hidden]{display:none!important}
 </style>
 </head>
@@ -100,9 +107,9 @@ function tsFor(date){if(date===todayISO())return Date.now();const n=new Date();c
 const fdate=d=>{try{return new Date(d+'T12:00').toLocaleDateString('fr-FR',{weekday:'short',day:'numeric',month:'short'})}catch(e){return d}};
 
 /* ---------- données ---------- */
-function initial(){
+function initial(m,box,inv){
   const now=Date.now();
-  const s={v:1,investPct:10,refundPct:5,investInit:10,created:now,lastAdjust:now,lastBackup:0,tx:[],objets:[
+  const s={v:1,investPct:isFinite(inv)?inv:10,refundPct:5,investInit:box>0?r3(box):0,created:now,lastAdjust:now,lastBackup:0,tx:[],objets:[
     {id:'transport',nom:'Transport',pct:42,prio:1},
     {id:'repas',nom:'Repas et café hors maison',pct:25,prio:1},
     {id:'coiffeur',nom:'Coiffeur',pct:8,prio:2},
@@ -110,11 +117,11 @@ function initial(){
     {id:'sorties',nom:'Sorties et loisirs',pct:7,prio:3},
     {id:'dons',nom:'Dons',pct:3,prio:3}
   ]};
-  s.tx.push({id:uid(),ts:now,date:todayISO(),type:'revenu',montant:119.25,hors:false,note:'Solde de départ',alloc:allocate(s,119.25,0)});
+  if(m>0)s.tx.push({id:uid(),ts:now,date:todayISO(),type:'revenu',montant:r3(m),hors:false,note:'Solde de départ',alloc:allocate(s,r3(m),0)});
   return s;
 }
 function load(){try{const r=localStorage.getItem(KEY);return r?JSON.parse(r):null}catch(e){storageOK=false;return null}}
-function save(){try{localStorage.setItem(KEY,JSON.stringify(S));storageOK=true}catch(e){storageOK=false}}
+function save(){if(!S)return;try{localStorage.setItem(KEY,JSON.stringify(S));storageOK=true}catch(e){storageOK=false}}
 let S;
 
 const sumPct=s=>s.objets.reduce((a,o)=>a+(+o.pct||0),0);
@@ -223,6 +230,61 @@ function saveDepot(){
   S.tx.push(t);save();toast('🐷 Boîte mise à jour ✔');render();
 }
 
+/* ---------- premier lancement ---------- */
+function setupHTML(){
+  return `<div class="card"><h2 style="margin:0 0 6px;text-transform:none;letter-spacing:0;color:var(--tx);font-size:18px">👋 Bienvenue dans Pocket Money</h2>
+  <div class="mut">Indique ta situation de départ. Tout reste sur ce téléphone.</div>
+  <label>Argent que tu as en poche maintenant (dt)</label><input id="suM" class="amount" inputmode="decimal" placeholder="0,000">
+  <label>Déjà dans ta boîte à économies (dt)</label><input id="suB" inputmode="decimal" value="0">
+  <label>% de chaque revenu à mettre dans la boîte</label><input id="suI" inputmode="decimal" value="10">
+  <div class="mut" style="margin-top:8px">Des objets de départ (transport, repas…) sont créés ; tu pourras les modifier dans Réglages.</div>
+  <button class="btn" onclick="startApp()">Commencer</button></div>
+  <div class="card"><b>…ou restaurer une sauvegarde</b><input type="file" accept=".json,application/json,text/plain" onchange="importFile(this)" style="margin-top:8px">
+  <textarea id="imp" placeholder='{"v":1,...}' style="margin-top:8px"></textarea><button class="btn sm sec" onclick="importBk()">Restaurer</button></div>`;
+}
+function startApp(){
+  const m=num($('#suM').value),b=num($('#suB').value),i=num($('#suI').value);
+  if(!(m>=0)){toast('Entre le montant en poche');return}
+  S=initial(m,b>0?b:0,i>=0&&i<=100?i:10);save();toast('C\'est parti ✔');go('home');
+}
+
+/* ---------- code PIN ---------- */
+let pinBuf='';
+async function hashPin(pin,salt){
+  const d=new TextEncoder().encode(salt+':'+pin);
+  try{const h=await crypto.subtle.digest('SHA-256',d);return [...new Uint8Array(h)].map(b=>b.toString(16).padStart(2,'0')).join('')}
+  catch(e){let x=0;for(const c of salt+':'+pin)x=(x*31+c.charCodeAt(0))|0;return 'f'+x}
+}
+function showLock(){
+  pinBuf='';let el=$('#lock');
+  if(!el){el=document.createElement('div');el.id='lock';document.body.appendChild(el)}
+  el.innerHTML=`<div class="lockin"><img src="icon-192.png" width="64" height="64" style="border-radius:16px"><h1 style="font-size:20px;margin:12px 0 4px">Pocket Money</h1>
+  <div class="mut">Entre ton code PIN</div><div id="dots" class="dots"></div>
+  <div class="pad">${[1,2,3,4,5,6,7,8,9,'⌫',0,'OK'].map(k=>`<button data-k="${k}">${k}</button>`).join('')}</div>
+  <button class="lnk" id="forgot">Code oublié ?</button><div id="forgotBox" hidden class="mut" style="max-width:280px;text-align:center">Le code ne peut pas être récupéré. Tu peux tout effacer puis restaurer une sauvegarde.<button class="btn danger sm" id="wipe">Tout effacer</button></div></div>`;
+  el.hidden=false;drawDots();
+  el.querySelector('.pad').onclick=e=>{const b=e.target.closest('button');if(!b)return;const k=b.dataset.k;
+    if(k==='⌫')pinBuf=pinBuf.slice(0,-1);else if(k==='OK')checkPin();else if(pinBuf.length<6){pinBuf+=k;if(pinBuf.length===(S.pin.len||4))checkPin()}
+    drawDots()};
+  el.querySelector('#forgot').onclick=()=>{el.querySelector('#forgotBox').hidden=false};
+  let armed=false;el.querySelector('#wipe').onclick=e=>{if(!armed){armed=true;e.target.textContent='Appuie encore pour confirmer';return}try{localStorage.removeItem(KEY)}catch(x){}S=null;el.hidden=true;render()};
+}
+function drawDots(){const n=(S&&S.pin&&S.pin.len)||4;$('#dots').innerHTML=Array.from({length:Math.max(n,pinBuf.length)},(_,i)=>`<i class="${i<pinBuf.length?'on':''}"></i>`).join('')}
+async function checkPin(){
+  const h=await hashPin(pinBuf,S.pin.salt);
+  if(h===S.pin.hash){$('#lock').hidden=true;pinBuf=''}
+  else{pinBuf='';drawDots();const d=$('#dots');d.classList.add('shake');setTimeout(()=>d.classList.remove('shake'),400);toast('Code incorrect')}
+}
+async function setPin(){
+  const a=$('#pin1').value.trim(),b=$('#pin2').value.trim();
+  if(!/^\d{4,6}$/.test(a)){toast('Le code doit avoir 4 à 6 chiffres');return}
+  if(a!==b){toast('Les deux codes ne correspondent pas');return}
+  const salt=uid();S.pin={salt,len:a.length,hash:await hashPin(a,salt)};save();toast('Code PIN activé 🔒');render();
+}
+function removePin(){delete S.pin;save();toast('Code PIN supprimé');render()}
+let hiddenAt=0;
+document.addEventListener('visibilitychange',()=>{if(document.hidden)hiddenAt=Date.now();else if(S&&S.pin&&hiddenAt&&Date.now()-hiddenAt>60000)showLock()});
+
 /* ---------- ajustements proposés par Claude (lien ou code) ---------- */
 let PENDING=null;
 function parseMaj(str){
@@ -266,6 +328,8 @@ async function copyText(txt,ta){
 function render(){
   $('#today').textContent=new Date().toLocaleDateString('fr-FR',{weekday:'long',day:'numeric',month:'long'});
   const v=$('#view');
+  document.querySelector('nav').hidden=!S;
+  if(!S){v.innerHTML=setupHTML();return}
   if(tab==='home')v.innerHTML=homeHTML();
   else if(tab==='add'){v.innerHTML=addHTML();bindAdd()}
   else if(tab==='hist')v.innerHTML=histHTML();
@@ -504,7 +568,13 @@ function exportText(){
 let resetArm=false;
 function setHTML(){
   const sum=sumPct(S),tot=sum+(+S.investPct);
-  let h=`<div class="card"><b>🤖 Code d'ajustement de Claude</b><div class="mut">Colle ici le code que Claude t'a donné (ou ouvre directement son lien).</div><input id="majCode" placeholder="PM:transport=44;repas=24;…"><button class="btn sm" onclick="useCode()">Voir l'ajustement</button></div>
+  let h=`<div class="card"><b>🔒 Code PIN</b>${S.pin?`<div class="mut">Activé. L'appli le demande à l'ouverture et après 1 min en arrière-plan.</div>
+    <label>Nouveau code (4 à 6 chiffres)</label><input id="pin1" type="password" inputmode="numeric" maxlength="6"><label>Confirmer</label><input id="pin2" type="password" inputmode="numeric" maxlength="6">
+    <div class="o3"><button class="btn sm" onclick="setPin()">Changer</button><button class="btn sm sec" onclick="removePin()">Supprimer</button></div>`
+    :`<div class="mut">Protège l'appli si quelqu'un prend ton téléphone.</div>
+    <label>Code (4 à 6 chiffres)</label><input id="pin1" type="password" inputmode="numeric" maxlength="6"><label>Confirmer</label><input id="pin2" type="password" inputmode="numeric" maxlength="6">
+    <button class="btn sm" onclick="setPin()">Activer le code PIN</button>`}</div>
+  <div class="card"><b>🤖 Code d'ajustement de Claude</b><div class="mut">Colle ici le code que Claude t'a donné (ou ouvre directement son lien).</div><input id="majCode" placeholder="PM:transport=44;repas=24;…"><button class="btn sm" onclick="useCode()">Voir l'ajustement</button></div>
   <div class="card"><b>Investissement</b><div class="o3"><div><label>% de chaque revenu</label><input id="sInv" inputmode="decimal" value="${S.investPct}"></div><div><label>% remboursement urgence</label><input id="sRef" inputmode="decimal" value="${S.refundPct}"></div></div>
   <label>Économies de départ (boîte) (dt)</label><input id="sInit" inputmode="decimal" value="${S.investInit}"></div>
   <h2>Objets</h2><div class="mut" style="margin:0 4px">Total objets ${sum}% + investissement ${S.investPct}% = <b style="color:${Math.abs(tot-100)<0.01?'var(--ok)':'var(--warn)'}">${tot}%</b>${Math.abs(tot-100)<0.01?' ✔':' (idéalement 100 %)'}</div>`;
@@ -548,12 +618,12 @@ function importBk(){
   try{const d=JSON.parse($('#imp').value);if(!Array.isArray(d.objets)||!Array.isArray(d.tx))throw 0;S=d;save();toast('Données restaurées ✔');go('home')}
   catch(e){toast('Sauvegarde invalide')}
 }
-function resetAll(){if(!resetArm){resetArm=true;render();setTimeout(()=>{resetArm=false;if(tab==='set')render()},4000);return}resetArm=false;S=initial();save();toast('Réinitialisé');go('home')}
+function resetAll(){if(!resetArm){resetArm=true;render();setTimeout(()=>{resetArm=false;if(tab==='set')render()},4000);return}resetArm=false;try{localStorage.removeItem(KEY)}catch(e){}S=null;tab='home';toast('Réinitialisé');render()}
 
 if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
-S=load()||initial();
-save();
-try{const q=new URLSearchParams(location.search).get('maj');if(q){PENDING=parseMaj('maj='+encodeURIComponent(q));history.replaceState(null,'',location.pathname)}}catch(e){}
+S=load();
+if(S&&S.pin)showLock();
+try{if(S){const q=new URLSearchParams(location.search).get('maj');if(q){PENDING=parseMaj('maj='+encodeURIComponent(q));history.replaceState(null,'',location.pathname)}}}catch(e){}
 render();
 </script>
 </body>
