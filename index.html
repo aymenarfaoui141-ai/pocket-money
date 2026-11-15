@@ -278,7 +278,8 @@ function homeHTML(){
   const c=compute(S),pd=perDay(),jours=pd.v>0?c.dispo/pd.v:Infinity;
   let h='';
   if(!storageOK)h+=`<div class="card alert bad"><b>⚠️ Stockage indisponible ici.</b><div class="mut">Ouvre ce lien dans Chrome sur ton téléphone pour que tes données soient gardées.</div></div>`;
-  h+=`<div class="card hero"><div class="mut">Disponible (hors investissement)</div><div class="big">${fmt(c.dispo)}</div>
+  h+=`<div class="card hero"><div class="mut">💵 Dans ta poche</div><div class="big">${fmt(c.dispo+c.aMettre)}</div>
+  <div class="mut">Pour tes objets : <b style="color:#fff">${fmt(c.dispo)}</b>${c.aMettre>0.0005?` · À mettre dans la boîte : <b style="color:#fff">${fmt(c.aMettre)}</b>`:''}</div>
   <div class="grid2"><div class="mini"><span class="mut">🐷 Dans la boîte</span><b>${fmt(c.boite)}</b></div>
   <div class="mini"><span class="mut">Tu tiens ≈</span><b>${isFinite(jours)?Math.max(0,Math.floor(jours))+' jours':'—'}</b><span class="mut">${pd.est?'estimation':fmt(pd.v)+'/jour'}</span></div></div>
   ${c.dette>0.0005?`<div class="mini" style="margin-top:8px"><span class="mut">Dette d'urgence à rembourser</span><b>${fmt(c.dette)}</b><span class="mut">+${S.refundPct}% ajoutés à la boîte à chaque revenu</span></div>`:''}</div>`;
@@ -483,7 +484,7 @@ function exportText(){
   const c=compute(S),L=[];
   L.push('EXPORT POCKET MONEY — '+new Date().toLocaleString('fr-FR'));
   L.push(`Paramètres : investissement ${S.investPct}% · remboursement urgences ${S.refundPct}% · économies de départ ${fmt(S.investInit)}`);
-  L.push(`Disponible : ${fmt(c.dispo)} · Dans la boîte : ${fmt(c.boite)} · À mettre dans la boîte : ${fmt(c.aMettre)} · Dette urgences : ${fmt(c.dette)}`);
+  L.push(`Dans la poche : ${fmt(c.dispo+c.aMettre)} · Pour les objets : ${fmt(c.dispo)} · Dans la boîte : ${fmt(c.boite)} · À mettre dans la boîte : ${fmt(c.aMettre)} · Dette urgences : ${fmt(c.dette)}`);
   L.push('Dettes de dépannage : '+(c.dettesList.length?c.dettesList.map(([q,v])=>q+' '+fmt(v)).join(', '):'aucune'));
   L.push('','OBJETS ([id] nom | priorité | % | alloué | dépensé | reste | échéance/objectif)');
   S.objets.forEach(o=>L.push(`- [${o.id}] ${o.nom} | P${o.prio} | ${o.pct}% | ${fmt(c.alloue[o.id])} | ${fmt(c.dep[o.id])} | ${fmt(c.eff[o.id])}${o.echeance?' | éch. '+o.echeance:''}${+o.cible>0?' | obj. '+fmt(o.cible):''}`));
