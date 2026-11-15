@@ -96,7 +96,7 @@ const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&
 const fmt=n=>(r3(n)).toLocaleString('fr-FR',{minimumFractionDigits:3,maximumFractionDigits:3})+' dt';
 const num=v=>{const x=parseFloat(String(v).replace(/\s/g,'').replace(',','.'));return isFinite(x)?x:NaN};
 function todayISO(){const d=new Date();d.setMinutes(d.getMinutes()-d.getTimezoneOffset());return d.toISOString().slice(0,10)}
-function tsFor(date){const n=new Date();const t=new Date(date+'T'+String(n.getHours()).padStart(2,'0')+':'+String(n.getMinutes()).padStart(2,'0')+':'+String(n.getSeconds()).padStart(2,'0')).getTime();return isFinite(t)?t:Date.now()}
+function tsFor(date){if(date===todayISO())return Date.now();const n=new Date();const t=new Date(date+'T'+String(n.getHours()).padStart(2,'0')+':'+String(n.getMinutes()).padStart(2,'0')+':'+String(n.getSeconds()).padStart(2,'0')).getTime();return isFinite(t)?t:Date.now()}
 const fdate=d=>{try{return new Date(d+'T12:00').toLocaleDateString('fr-FR',{weekday:'short',day:'numeric',month:'short'})}catch(e){return d}};
 
 /* ---------- données ---------- */
@@ -121,33 +121,51 @@ const sumPct=s=>s.objets.reduce((a,o)=>a+(+o.pct||0),0);
 const objById=id=>S.objets.find(o=>o.id===id);
 const impObj=()=>S.objets.find(o=>o.imprevu)||S.objets[0];
 
-function allocate(s,m,dette){
-  const invest=r3(m*s.investPct/100);
-  const refund=r3(Math.min(dette,m*s.refundPct/100));
-  const net=m-invest-refund, sum=sumPct(s), obj={};
+function splitPct(s,net){
+  const sum=sumPct(s),obj={};if(!(net>0))return obj;
   if(sum>0){s.objets.forEach(o=>{if(+o.pct>0)obj[o.id]=r3(net*o.pct/sum)})}
   else{const i=s.objets.find(o=>o.imprevu)||s.objets[0];if(i)obj[i.id]=r3(net)}
-  const tot=invest+refund+Object.values(obj).reduce((a,b)=>a+b,0), diff=r3(m-tot);
+  const diff=r3(net-Object.values(obj).reduce((a,b)=>a+b,0));
   if(diff!==0){const k=Object.keys(obj).sort((a,b)=>obj[b]-obj[a])[0];if(k)obj[k]=r3(obj[k]+diff)}
-  return {invest,refund,obj};
+  return obj;
+}
+function allocate(s,m,dette,remb,outs){
+  remb=r3(Math.max(0,Math.min(remb||0,m)));
+  const base=r3(m-remb);
+  const invest=r3(base*s.investPct/100);
+  const refund=r3(Math.min(dette,base*s.refundPct/100));
+  const obj=splitPct(s,r3(base-invest-refund));
+  const dettes={};let left=remb;
+  for(const [q,v] of (outs||[])){if(left<=0.0005)break;const t=r3(Math.min(v,left));if(t>0){dettes[q]=t;left=r3(left-t)}}
+  return {invest,refund,obj,dettes};
 }
 
 function compute(s){
   const raw={},alloue={},dep={},depUrg={};
   s.objets.forEach(o=>{raw[o.id]=0;alloue[o.id]=0;dep[o.id]=0;depUrg[o.id]=0});
-  let invest=+s.investInit||0,dette=0,urgTot=0;
+  let boite=+s.investInit||0,aMettre=0,dette=0,urgTot=0;
+  const debts={},first={};
   const fallback=(s.objets.find(o=>o.imprevu)||s.objets[0]||{}).id;
+  const add=(k,v,al)=>{const id=(k in raw)?k:fallback;if(id){raw[id]+=v;if(al)alloue[id]+=v}};
   for(const t of [...s.tx].sort((a,b)=>a.ts-b.ts)){
     if(t.hors)continue;
     if(t.type==='revenu'){
       const a=t.alloc||{invest:0,refund:0,obj:{}};
-      for(const k in a.obj){const id=(k in raw)?k:fallback;if(id){raw[id]+=a.obj[k];alloue[id]+=a.obj[k]}}
-      invest+=a.invest+a.refund;dette=Math.max(0,dette-a.refund);
+      for(const k in a.obj)add(k,a.obj[k],true);
+      aMettre+=a.invest+a.refund;dette=Math.max(0,dette-a.refund);
+      for(const q in (a.dettes||{}))debts[q]=(debts[q]||0)-a.dettes[q];
     }else if(t.type==='depense'){
-      if(t.urgence){invest-=t.montant;dette+=t.montant;urgTot+=t.montant;if(t.obj in depUrg)depUrg[t.obj]+=t.montant}
-      else{const id=(t.obj in raw)?t.obj:fallback;if(id){raw[id]-=t.montant;dep[id]+=t.montant}}
+      if(t.urgence){boite-=t.montant;dette+=t.montant;urgTot+=t.montant;if(t.obj in depUrg)depUrg[t.obj]+=t.montant}
+      else{add(t.obj,-t.montant,false);const id=(t.obj in dep)?t.obj:fallback;if(id)dep[id]+=t.montant}
     }else if(t.type==='reeq'){for(const k in t.delta)if(k in raw){raw[k]+=t.delta[k];alloue[k]+=t.delta[k]}}
+    else if(t.type==='depot'){boite+=t.montant;aMettre-=(t.pourDu!=null?t.pourDu:t.montant);for(const k in (t.delta||{}))add(k,t.delta[k],false)}
+    else if(t.type==='emprunt'){for(const k in (t.alloc||{}))add(k,t.alloc[k],true);debts[t.qui]=(debts[t.qui]||0)+t.montant;if(!(t.qui in first))first[t.qui]=t.ts}
+    else if(t.type==='rembDette'){for(const k in (t.delta||{}))add(k,t.delta[k],false);debts[t.qui]=(debts[t.qui]||0)-t.montant}
   }
+  aMettre=Math.max(0,r3(aMettre));
+  const dettesList=Object.keys(debts).filter(q=>debts[q]>0.0005).sort((a,b)=>(first[a]||0)-(first[b]||0)).map(q=>[q,r3(debts[q])]);
+  const detteExt=r3(dettesList.reduce((a,x)=>a+x[1],0));
+  const invest=boite;
   // couverture des dépassements : Imprévus d'abord, puis priorité 3, puis priorité 2
   const eff={...raw},transfers=[];
   const deficits=s.objets.filter(o=>eff[o.id]<-0.0005).sort((a,b)=>a.prio-b.prio);
@@ -159,7 +177,7 @@ function compute(s){
   }
   const dispo=Object.values(raw).reduce((a,b)=>a+b,0);
   const deficit=-Object.values(eff).filter(v=>v<0).reduce((a,b)=>a+b,0);
-  return {raw,eff,alloue,dep,depUrg,invest,dette,dispo,deficit,transfers,urgTot};
+  return {raw,eff,alloue,dep,depUrg,invest,boite,aMettre,dette,dispo,deficit,transfers,urgTot,dettesList,detteExt};
 }
 
 function perDay(){
@@ -189,6 +207,20 @@ function rebalance(note){
   const delta={};S.objets.forEach(o=>{delta[o.id]=r3(c.dispo*(+o.pct||0)/sum-c.raw[o.id])});
   S.tx.push({id:uid(),ts:Date.now(),date:todayISO(),type:'reeq',delta,hors:false,note:note||'Rééquilibrage du disponible'});
   return true;
+}
+
+function takeFrom(m){
+  const c=compute(S),pos=S.objets.filter(o=>c.raw[o.id]>0),tot=pos.reduce((a,o)=>a+c.raw[o.id],0),delta={};let left=m;
+  if(tot>0){const take=Math.min(m,tot);pos.forEach(o=>{delta[o.id]=-r3(take*c.raw[o.id]/tot)});left=r3(m-take)}
+  if(left>0.0005){const i=impObj();if(i)delta[i.id]=r3((delta[i.id]||0)-left)}
+  return delta;
+}
+function saveDepot(){
+  const m=r3(num($('#depM').value));if(!(m>0)){toast('Entre un montant valide');return}
+  const c=compute(S),pourDu=r3(Math.min(m,c.aMettre)),extra=r3(m-pourDu);
+  const t={id:uid(),ts:Date.now(),date:todayISO(),type:'depot',montant:m,pourDu,hors:false,note:extra>0?'dont '+fmt(extra)+' en plus (pris sur les objets)':''};
+  if(extra>0)t.delta=takeFrom(extra);
+  S.tx.push(t);save();toast('🐷 Boîte mise à jour ✔');render();
 }
 
 /* ---------- ajustements proposés par Claude (lien ou code) ---------- */
@@ -247,9 +279,15 @@ function homeHTML(){
   let h='';
   if(!storageOK)h+=`<div class="card alert bad"><b>⚠️ Stockage indisponible ici.</b><div class="mut">Ouvre ce lien dans Chrome sur ton téléphone pour que tes données soient gardées.</div></div>`;
   h+=`<div class="card hero"><div class="mut">Disponible (hors investissement)</div><div class="big">${fmt(c.dispo)}</div>
-  <div class="grid2"><div class="mini"><span class="mut">Investissement</span><b>${fmt(c.invest)}</b></div>
+  <div class="grid2"><div class="mini"><span class="mut">🐷 Dans la boîte</span><b>${fmt(c.boite)}</b></div>
   <div class="mini"><span class="mut">Tu tiens ≈</span><b>${isFinite(jours)?Math.max(0,Math.floor(jours))+' jours':'—'}</b><span class="mut">${pd.est?'estimation':fmt(pd.v)+'/jour'}</span></div></div>
-  ${c.dette>0.0005?`<div class="mini" style="margin-top:8px"><span class="mut">Dette d'urgence à rembourser</span><b>${fmt(c.dette)}</b><span class="mut">+${S.investPct+S.refundPct>0?S.refundPct:0}% prélevés à chaque revenu</span></div>`:''}</div>`;
+  ${c.dette>0.0005?`<div class="mini" style="margin-top:8px"><span class="mut">Dette d'urgence à rembourser</span><b>${fmt(c.dette)}</b><span class="mut">+${S.refundPct}% ajoutés à la boîte à chaque revenu</span></div>`:''}</div>`;
+  if(c.aMettre>0.0005)h+=`<div class="card alert info"><div class="row"><b>🐷 À mettre dans la boîte</b><b>${fmt(c.aMettre)}</b></div>
+    <div class="mut">${S.investPct}% de tes revenus${c.dette>0.0005?' + remboursement d\'urgence':''}. Mets cet argent de côté, puis confirme.</div>
+    <div class="o3" style="align-items:end"><input id="depM" inputmode="decimal" value="${c.aMettre.toFixed(3)}"><button class="btn sm" onclick="saveDepot()">J'ai mis l'argent</button></div></div>`;
+  if(c.dettesList.length)h+=`<div class="card alert"><div class="row"><b>💳 Dettes de dépannage</b><b>${fmt(c.detteExt)}</b></div>
+    ${c.dettesList.map(([q,v])=>`<div class="row mut"><span>${esc(q)}</span><span>${fmt(v)}</span></div>`).join('')}
+    <div class="mut" style="margin-top:6px">Le remboursement te sera proposé à ton prochain revenu.</div></div>`;
   h=pendingHTML()+h;
   const sug=PENDING?null:suggestion();
   if(sug)h+=`<div class="card alert info"><b>📈 Suggestion après 7 jours</b><div class="mut">D'après ta vraie consommation :</div>
@@ -300,10 +338,14 @@ function addHTML(){
   const opts=[...S.objets].sort((a,b)=>a.prio-b.prio).map(o=>`<option value="${o.id}">${esc(o.nom)}</option>`).join('');
   const horsNames=[...new Set(S.tx.filter(t=>t.hors&&t.objNom).map(t=>t.objNom))];
   return `<div class="card">
-  <div class="seg" id="segType"><button data-v="depense" class="${F.type==='depense'?'on':''}">Dépense</button><button data-v="revenu" class="${F.type==='revenu'?'on':''}">Revenu</button></div>
+  <div class="seg" id="segType"><button data-v="depense" class="${F.type==='depense'?'on':''}">Dépense</button><button data-v="revenu" class="${F.type==='revenu'?'on':''}">Revenu</button><button data-v="dette" class="${F.type==='dette'?'on':''}">Dette</button></div>
+  <div id="bDsub" style="margin-top:8px"><div class="seg" id="segDsub"><button data-v="emprunt" class="${F.dsub!=='remb'?'on':''}">J'emprunte</button><button data-v="remb" class="${F.dsub==='remb'?'on':''}">Je rembourse</button></div></div>
   <label>Montant (dt)</label><input id="fM" class="amount" inputmode="decimal" placeholder="0,000" autocomplete="off">
-  <label>Ça compte dans le budget ?</label>
-  <div class="seg" id="segHors"><button data-v="0" class="${!F.hors?'on':''}">Dans le budget</button><button data-v="1" class="${F.hors?'on':''}">Hors budget</button></div>
+  <div id="bQui"><label>Personne</label><input id="fQui" list="dlQui" placeholder="ex. un ami, ma sœur…"><datalist id="dlQui">${[...new Set(S.tx.filter(t=>t.qui).map(t=>t.qui))].map(n=>`<option value="${esc(n)}">`).join('')}</datalist>
+    <div class="mut" id="quiInfo" style="margin-top:6px"></div></div>
+  <div id="bRemb" hidden><label class="chk"><input type="checkbox" id="fRembOn" checked><span>Rembourser d'abord mes dettes de dépannage</span></label><input id="fRembM" inputmode="decimal" style="margin-top:6px"></div>
+  <div id="bHors"><label>Ça compte dans le budget ?</label>
+  <div class="seg" id="segHors"><button data-v="0" class="${!F.hors?'on':''}">Dans le budget</button><button data-v="1" class="${F.hors?'on':''}">Hors budget</button></div></div>
   <div id="bObj"><label>Objet</label><select id="fObj">${opts}<option value="__new">+ Nouvel objet…</option></select></div>
   <div id="bNew" hidden><label>Nom du nouvel objet</label><input id="fNewNom" placeholder="ex. Cadeau, Livre…">
     <label>Priorité</label><select id="fNewPrio"><option value="1">1 – essentiel</option><option value="2" selected>2 – important</option><option value="3">3 – plaisir</option></select>
@@ -316,21 +358,32 @@ function addHTML(){
 }
 function bindAdd(){
   const upd=()=>{
-    const dep=F.type==='depense',inB=!F.hors;
+    const dt=F.type==='dette',dep=F.type==='depense',inB=!F.hors||dt,c0=compute(S);
+    $('#bDsub').hidden=!dt;$('#bQui').hidden=!dt;$('#bHors').hidden=dt;
+    $('#bRemb').hidden=!(F.type==='revenu'&&inB&&c0.detteExt>0);
+    if(!$('#bRemb').hidden&&!$('#fRembM').dataset.touched){const mm=num($('#fM').value);$('#fRembM').value=r3(Math.min(c0.detteExt,mm>0?mm:c0.detteExt)).toFixed(3)}
+    if(dt){const q=$('#fQui').value.trim(),d=c0.dettesList.find(x=>x[0]===q);$('#quiInfo').textContent=c0.dettesList.length?'Dettes en cours : '+c0.dettesList.map(([n,v])=>n+' '+fmt(v)).join(' · '):'Aucune dette en cours.';if(F.dsub==='remb'&&d&&!$('#fM').value)$('#fM').value=d[1].toFixed(3)}
     $('#bObj').hidden=!(dep&&inB);
     $('#bNew').hidden=!(dep&&inB&&$('#fObj').value==='__new');
-    $('#bHorsNom').hidden=inB;
+    $('#bHorsNom').hidden=inB||dt;
     $('#bUrg').hidden=!(dep&&inB);
     const p=$('#bPrev'),m=num($('#fM').value);
-    if(!dep&&inB&&m>0){
-      const a=allocate(S,m,compute(S).dette);
+    if(dt&&F.dsub!=='remb'&&m>0){
+      const o=splitPct(S,m);p.hidden=false;
+      p.innerHTML='<b>Répartition de l\'emprunt</b><div class="mut">Ajouté à tes objets (pas de 10 %).</div>'+S.objets.filter(x=>o[x.id]).map(x=>`<div><span>${esc(x.nom)}</span><span>${fmt(o[x.id])}</span></div>`).join('');
+    }else if(dt){p.hidden=true}
+    else if(F.type==='revenu'&&inB&&m>0){
+      const remb=!$('#bRemb').hidden&&$('#fRembOn').checked?num($('#fRembM').value)||0:0;
+      const a=allocate(S,m,c0.dette,remb,c0.dettesList);
       p.hidden=false;
-      p.innerHTML='<b>Répartition prévue</b>'+`<div><span>Investissement (${S.investPct}%)</span><b>${fmt(a.invest)}</b></div>`+(a.refund>0?`<div><span>Remboursement urgence</span><b>${fmt(a.refund)}</b></div>`:'')+
+      p.innerHTML='<b>Répartition prévue</b>'+Object.keys(a.dettes).map(q=>`<div><span>💳 Remboursement ${esc(q)}</span><b>${fmt(a.dettes[q])}</b></div>`).join('')+`<div><span>🐷 À mettre dans la boîte (${S.investPct}%)</span><b>${fmt(a.invest)}</b></div>`+(a.refund>0?`<div><span>🐷 Remboursement urgence</span><b>${fmt(a.refund)}</b></div>`:'')+
         S.objets.filter(o=>a.obj[o.id]).map(o=>`<div><span>${esc(o.nom)}</span><span>${fmt(a.obj[o.id])}</span></div>`).join('');
     }else p.hidden=true;
   };
   $('#segType').onclick=e=>{const b=e.target.closest('button');if(!b)return;F.type=b.dataset.v;[...$('#segType').children].forEach(x=>x.classList.toggle('on',x===b));upd()};
   $('#segHors').onclick=e=>{const b=e.target.closest('button');if(!b)return;F.hors=b.dataset.v==='1';[...$('#segHors').children].forEach(x=>x.classList.toggle('on',x===b));upd()};
+  $('#segDsub').onclick=e=>{const b=e.target.closest('button');if(!b)return;F.dsub=b.dataset.v;[...$('#segDsub').children].forEach(x=>x.classList.toggle('on',x===b));upd()};
+  $('#fRembM').oninput=()=>{$('#fRembM').dataset.touched='1';upd()};$('#fRembOn').onchange=upd;$('#fQui').oninput=upd;
   $('#fObj').onchange=upd;$('#fM').oninput=upd;
   $('#fSave').onclick=saveTx;
   upd();setTimeout(()=>{const e=$('#fM');if(e)e.focus()},50);
@@ -341,11 +394,18 @@ function saveTx(){
   const date=$('#fDate').value||todayISO(),note=$('#fNote').value.trim();
   const t={id:uid(),ts:tsFor(date),date,type:F.type,montant:m,hors:F.hors,note};
   let msg='Enregistré ✔';
-  if(F.hors){
+  if(F.type==='dette'){
+    const q=$('#fQui').value.trim();if(!q){toast('Indique la personne');return}
+    t.qui=q;t.hors=false;
+    if(F.dsub==='remb'){t.type='rembDette';t.delta=takeFrom(m);msg='Remboursement enregistré ✔'}
+    else{t.type='emprunt';t.alloc=splitPct(S,m);msg='Dette enregistrée ✔'}
+  }else if(F.hors){
     const n=$('#fHorsNom').value.trim();if(!n){toast("Indique l'objet hors budget");return}
     t.objNom=n;msg='Hors budget enregistré ✔';
   }else if(F.type==='revenu'){
-    t.alloc=allocate(S,m,compute(S).dette);msg='Revenu réparti ✔';
+    const c0=compute(S),remb=!$('#bRemb').hidden&&$('#fRembOn').checked?num($('#fRembM').value)||0:0;
+    t.alloc=allocate(S,m,c0.dette,remb,c0.dettesList);
+    msg=Object.keys(t.alloc.dettes).length?'Revenu réparti, dette remboursée ✔':'Revenu réparti ✔';
   }else{
     let id=$('#fObj').value;
     if(id==='__new'){
@@ -368,10 +428,12 @@ function histHTML(){
   if(HF.f==='in')list=list.filter(t=>!t.hors);
   if(HF.f==='out')list=list.filter(t=>t.hors);
   if(HF.f==='urg')list=list.filter(t=>t.urgence);
+  if(HF.f==='det')list=list.filter(t=>t.type==='emprunt'||t.type==='rembDette'||(t.alloc&&t.alloc.dettes&&Object.keys(t.alloc.dettes).length));
+  if(HF.f==='box')list=list.filter(t=>t.type==='depot');
   if(HF.o)list=list.filter(t=>(t.obj===HF.o)||(t.hors&&t.objNom===HF.o));
   const names=[...S.objets.map(o=>({v:o.id,n:o.nom})),...[...new Set(S.tx.filter(t=>t.hors&&t.objNom).map(t=>t.objNom))].map(n=>({v:n,n:n+' (hors budget)'}))];
-  let tot=0;list.forEach(t=>{if(t.type==='revenu')tot+=t.montant;else if(t.type==='depense')tot-=t.montant});
-  let h=`<div class="chips">${[['all','Tout'],['in','Budget'],['out','Hors budget'],['urg','Urgences']].map(([k,l])=>`<button class="${HF.f===k?'on':''}" onclick="HF.f='${k}';render()">${l}</button>`).join('')}</div>
+  let tot=0;list.forEach(t=>{if(t.type==='revenu'||t.type==='emprunt')tot+=t.montant;else if(t.type==='depense'||t.type==='rembDette')tot-=t.montant});
+  let h=`<div class="chips">${[['all','Tout'],['in','Budget'],['out','Hors budget'],['urg','Urgences'],['det','Dettes'],['box','Boîte']].map(([k,l])=>`<button class="${HF.f===k?'on':''}" onclick="HF.f='${k}';render()">${l}</button>`).join('')}</div>
   <select onchange="HF.o=this.value;render()"><option value="">Tous les objets</option>${names.map(x=>`<option value="${esc(x.v)}" ${HF.o===x.v?'selected':''}>${esc(x.n)}</option>`).join('')}</select>
   <div class="card"><div class="row mut"><span>${list.length} opérations</span><span>Solde du filtre : <b style="color:var(--tx)">${fmt(tot)}</b></span></div>`;
   if(!list.length)h+='<div class="mut" style="padding:16px 0;text-align:center">Rien à afficher</div>';
@@ -379,9 +441,13 @@ function histHTML(){
     let label,amt;
     if(t.type==='revenu'){label=t.hors?'Revenu – '+esc(t.objNom):'Revenu';amt=`<span class="pos">+${fmt(t.montant)}</span>`}
     else if(t.type==='depense'){const o=objById(t.obj);label=esc(o?o.nom:(t.objNom||'(objet supprimé)'));amt=`<span class="neg">−${fmt(t.montant)}</span>`}
+    else if(t.type==='depot'){label='🐷 Mis dans la boîte';amt=`<span class="mut">${fmt(t.montant)}</span>`}
+    else if(t.type==='emprunt'){label='💳 Dette reçue – '+esc(t.qui);amt=`<span class="pos">+${fmt(t.montant)}</span>`}
+    else if(t.type==='rembDette'){label='💳 Remboursé – '+esc(t.qui);amt=`<span class="neg">−${fmt(t.montant)}</span>`}
     else{label='⚖️ Rééquilibrage';amt='<span class="mut">—</span>'}
+    let nt=t.note||'';if(t.type==='revenu'&&t.alloc&&t.alloc.dettes&&Object.keys(t.alloc.dettes).length)nt=(nt?nt+' · ':'')+'dont remboursé : '+Object.entries(t.alloc.dettes).map(([q,v])=>q+' '+fmt(v)).join(', ');
     const badges=(t.hors?'<span class="badge hb">Hors budget</span> ':'')+(t.urgence?'<span class="badge urg">Urgence</span>':'');
-    h+=`<div class="tx"><div class="l"><b>${label}</b><span class="mut">${fdate(t.date)}${t.note?' · '+esc(t.note):''}</span> ${badges}</div>${amt}<button class="del" onclick="delTx(this,'${t.id}')">🗑</button></div>`;
+    h+=`<div class="tx"><div class="l"><b>${label}</b><span class="mut">${fdate(t.date)}${nt?' · '+esc(nt):''}</span> ${badges}</div>${amt}<button class="del" onclick="delTx(this,'${t.id}')">🗑</button></div>`;
   });
   return h+'</div>';
 }
@@ -417,12 +483,16 @@ function exportText(){
   const c=compute(S),L=[];
   L.push('EXPORT POCKET MONEY — '+new Date().toLocaleString('fr-FR'));
   L.push(`Paramètres : investissement ${S.investPct}% · remboursement urgences ${S.refundPct}% · économies de départ ${fmt(S.investInit)}`);
-  L.push(`Disponible : ${fmt(c.dispo)} · Investissement : ${fmt(c.invest)} · Dette urgences : ${fmt(c.dette)}`);
+  L.push(`Disponible : ${fmt(c.dispo)} · Dans la boîte : ${fmt(c.boite)} · À mettre dans la boîte : ${fmt(c.aMettre)} · Dette urgences : ${fmt(c.dette)}`);
+  L.push('Dettes de dépannage : '+(c.dettesList.length?c.dettesList.map(([q,v])=>q+' '+fmt(v)).join(', '):'aucune'));
   L.push('','OBJETS ([id] nom | priorité | % | alloué | dépensé | reste | échéance/objectif)');
   S.objets.forEach(o=>L.push(`- [${o.id}] ${o.nom} | P${o.prio} | ${o.pct}% | ${fmt(c.alloue[o.id])} | ${fmt(c.dep[o.id])} | ${fmt(c.eff[o.id])}${o.echeance?' | éch. '+o.echeance:''}${+o.cible>0?' | obj. '+fmt(o.cible):''}`));
   L.push('','HISTORIQUE (date | type | objet | montant | budget | note)');
   [...S.tx].sort((a,b)=>a.ts-b.ts).forEach(t=>{
     if(t.type==='reeq'){L.push(`${t.date} | rééquilibrage | — | — | budget | ${t.note||''}`);return}
+    if(t.type==='depot'){L.push(`${t.date} | dépôt boîte | — | ${r3(t.montant)} | budget | ${t.note||''}`);return}
+    if(t.type==='emprunt'||t.type==='rembDette'){L.push(`${t.date} | ${t.type==='emprunt'?'dette reçue':'dette remboursée'} | ${t.qui} | ${t.type==='emprunt'?'+':'-'}${r3(t.montant)} | budget | ${t.note||''}`);return}
+    if(t.type==='revenu'&&t.alloc&&t.alloc.dettes&&Object.keys(t.alloc.dettes).length){L.push(`${t.date} | revenu | — | +${r3(t.montant)} | budget | ${t.note||''} (dont dettes remboursées : ${Object.entries(t.alloc.dettes).map(([q,v])=>q+' '+r3(v)).join(', ')})`);return}
     const o=t.obj?objById(t.obj):null;
     L.push(`${t.date} | ${t.type}${t.urgence?' (urgence)':''} | ${o?o.nom:(t.objNom||'—')} | ${t.type==='revenu'?'+':'-'}${r3(t.montant)} | ${t.hors?'HORS':'budget'} | ${t.note||''}`);
   });
