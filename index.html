@@ -227,11 +227,21 @@ function fixSum(delta,target){
   return delta;
 }
 function rebalance(note){
-  const c=compute(S);if(c.dispo<=0)return false;
+  // Re-répartit l'argent reçu depuis le dernier revenu selon les nouveaux %, sans toucher aux dépenses.
   const sum=sumPct(S);if(sum<=0)return false;
-  const delta={};S.objets.forEach(o=>{delta[o.id]=r3(c.dispo*(+o.pct||0)/sum-c.raw[o.id])});
+  const txs=S.tx.filter(t=>!t.hors),revs=txs.filter(t=>t.type==='revenu');if(!revs.length)return false;
+  const start=Math.max(...revs.map(t=>t.ts)),per={};S.objets.forEach(o=>per[o.id]=0);
+  const addp=(k,v)=>{if(k in per)per[k]+=v};
+  txs.filter(t=>t.ts>=start).forEach(t=>{
+    if(t.type==='revenu')for(const k in ((t.alloc&&t.alloc.obj)||{}))addp(k,t.alloc.obj[k]);
+    else if(t.type==='emprunt')for(const k in (t.alloc||{}))addp(k,t.alloc[k]);
+    else if(t.type==='reeq')for(const k in (t.delta||{}))addp(k,t.delta[k]);
+  });
+  const T=r3(Object.values(per).reduce((a,b)=>a+b,0));if(T<=0)return false;
+  const delta={};S.objets.forEach(o=>{delta[o.id]=r3(T*(+o.pct||0)/sum-per[o.id])});
   fixSum(delta,0);
-  S.tx.push({id:uid(),ts:Date.now(),date:todayISO(),type:'reeq',delta,hors:false,note:note||'Rééquilibrage du disponible'});
+  if(Object.values(delta).every(v=>Math.abs(v)<0.0005))return false;
+  S.tx.push({id:uid(),ts:Date.now(),date:todayISO(),type:'reeq',delta,base:T,hors:false,note:note||'Nouvelle répartition du dernier revenu'});
   return true;
 }
 
@@ -320,14 +330,14 @@ function pendingHTML(){
   const rows=S.objets.filter(o=>o.id in PENDING.pct).map(o=>`<tr><td>${esc(o.nom)}</td><td class="mut">${+o.pct}%</td><td>→ <b>${PENDING.pct[o.id]}%</b></td></tr>`).join('');
   return `<div class="card alert info"><b>🤖 Ajustement proposé par Claude</b>
   <table class="sugg">${rows}${PENDING.inv!=null?`<tr><td>Investissement</td><td class="mut">${S.investPct}%</td><td>→ <b>${PENDING.inv}%</b></td></tr>`:''}</table>
-  <label class="chk"><input type="checkbox" id="pReeq" checked> Appliquer aussi à l'argent disponible maintenant</label>
+  <label class="chk"><input type="checkbox" id="pReeq" checked> Recalculer aussi la répartition du dernier revenu</label>
   <div class="o3"><button class="btn sm" onclick="applyPending()">Appliquer</button><button class="btn sm sec" onclick="PENDING=null;render()">Refuser</button></div></div>`;
 }
 function applyPending(){
   if(!PENDING)return;
   for(const id in PENDING.pct){const o=objById(id);if(o)o.pct=PENDING.pct[id]}
   if(PENDING.inv!=null)S.investPct=PENDING.inv;
-  if($('#pReeq')&&$('#pReeq').checked)rebalance("Rééquilibrage (ajustement Claude)");
+  if($('#pReeq')&&$('#pReeq').checked)rebalance("Nouvelle répartition (ajustement Claude)");
   S.lastAdjust=Date.now();PENDING=null;save();toast('Ajustement appliqué ✔');render();
 }
 function useCode(){const p=parseMaj($('#majCode').value);if(!p){toast('Code non reconnu');return}PENDING=p;go('home')}
@@ -376,7 +386,7 @@ function homeHTML(){
   const sug=PENDING?null:suggestion();
   if(sug)h+=`<div class="card alert info"><b>📈 Suggestion après 7 jours</b><div class="mut">D'après ta vraie consommation :</div>
     <table class="sugg">${sug.map(x=>`<tr><td>${esc(x.nom)}</td><td class="mut">${x.cur}%</td><td>→ <b>${x.sug}%</b></td></tr>`).join('')}</table>
-    <label class="chk"><input type="checkbox" id="sugReeq" checked> Appliquer aussi à l'argent disponible maintenant</label>
+    <label class="chk"><input type="checkbox" id="sugReeq" checked> Recalculer aussi la répartition du dernier revenu</label>
     <div class="o3"><button class="btn sm" onclick="acceptSug()">Accepter</button><button class="btn sm sec" onclick="ignoreSug()">Ignorer</button></div></div>`;
   const al=[];
   if(c.deficit>0.0005)al.push(`<div class="card alert bad"><b>Il manque ${fmt(c.deficit)}</b><div class="mut">Tes enveloppes ne suffisent plus. Déclare une urgence (prise sur l'investissement), retarde un objet ou réduis tes dépenses.</div></div>`);
@@ -411,7 +421,7 @@ function acceptSug(){
   const sug=suggestion();if(!sug)return;
   sug.forEach(x=>{const o=objById(x.id);if(o)o.pct=x.sug});
   const re=$('#sugReeq')&&$('#sugReeq').checked;
-  if(re)rebalance('Rééquilibrage (suggestion acceptée)');
+  if(re)rebalance('Nouvelle répartition (suggestion acceptée)');
   S.lastAdjust=Date.now();save();toast('Pourcentages mis à jour');render();
 }
 function ignoreSug(){S.lastAdjust=Date.now();save();toast('Suggestion ignorée pour 7 jours');render()}
@@ -570,6 +580,7 @@ function showTx(id){
   if(t.type==='emprunt'&&a){b+='<h2>Répartition</h2>';for(const k in a)b+=kv(esc(oname(k)),fmt(a[k]))}
   if(t.type==='depot'){b+=kv('Demandé à ce moment',fmt(t.pourDu!=null?t.pourDu:t.montant));if(t.montant-(t.pourDu||0)>0.0005)b+=kv('En plus',fmt(t.montant-(t.pourDu||0)))}
   if(t.type==='epargne')b+=kv('Source',t.fromSolde?'Prise sur mon solde':'Argent à part (solde inchangé)');
+  if(t.type==='reeq'&&t.base)b+=kv('Montant re-réparti',fmt(t.base));
   if(t.delta&&Object.keys(t.delta).length){b+=`<h2>${t.type==='reeq'?'Changements par objet':'Pris sur les objets'}</h2>`;for(const k in t.delta)b+=kv(esc(oname(k)),sgn(t.delta[k]))}
   openSheet(label,b);
 }
@@ -589,7 +600,7 @@ function showObj(id){
     if(t.type==='revenu'&&t.alloc&&t.alloc.obj&&t.alloc.obj[id]){v=t.alloc.obj[id];l='Part d\'un revenu'}
     else if(t.type==='emprunt'&&t.alloc&&t.alloc[id]){v=t.alloc[id];l='Part d\'une dette reçue ('+esc(t.qui)+')'}
     else if(t.type==='depense'&&t.obj===id){v=t.urgence?0:-t.montant;l=t.urgence?'Dépense urgence (payée par la boîte) '+fmt(t.montant):'Dépense'+(t.note?' – '+esc(t.note):'')}
-    else if(t.delta&&t.delta[id]){v=t.delta[id];l=t.type==='reeq'?'⚖️ Rééquilibrage':t.type==='rembDette'?'Remboursement dette ('+esc(t.qui)+')':'Vers la boîte d\'épargne'}
+    else if(t.delta&&t.delta[id]){v=t.delta[id];l=t.type==='reeq'?'⚖️ Nouvelle répartition':t.type==='rembDette'?'Remboursement dette ('+esc(t.qui)+')':'Vers la boîte d\'épargne'}
     if(v!==null)mv.push({t,v,l});
   }
   mv.sort((a,b)=>b.t.ts-a.t.ts);
@@ -604,7 +615,7 @@ function txInfo(t){
     else if(t.type==='epargne'){label='🐷 Épargne ajoutée'+(t.fromSolde?' (prise sur mon solde)':' (argent à part)');amt=`<span class="mut">${fmt(t.montant)}</span>`}
     else if(t.type==='emprunt'){label='💳 Dette reçue – '+esc(t.qui);amt=`<span class="pos">+${fmt(t.montant)}</span>`}
     else if(t.type==='rembDette'){label='💳 Remboursé – '+esc(t.qui);amt=`<span class="neg">−${fmt(t.montant)}</span>`}
-    else{label='⚖️ Rééquilibrage';amt='<span class="mut">—</span>'}
+    else{label='⚖️ Nouvelle répartition';amt='<span class="mut">—</span>'}
     let nt=t.note||'';if(t.type==='revenu'&&t.alloc&&t.alloc.dettes&&Object.keys(t.alloc.dettes).length)nt=(nt?nt+' · ':'')+'dont remboursé : '+Object.entries(t.alloc.dettes).map(([q,v])=>q+' '+fmt(v)).join(', ');
     return {label,amt,nt};
 }
@@ -696,7 +707,7 @@ function setHTML(){
     ${o.imprevu?'<div class="mut" style="margin-top:6px">Objet « Imprévus » : il couvre en premier les dépassements et les nouveaux objets.</div>':used?'<div class="mut" style="margin-top:6px">Utilisé dans l\'historique (mets 0 % pour ne plus l\'alimenter).</div>':`<button class="btn sm sec" onclick="delObj(${i})">Supprimer cet objet</button>`}</div>`;
   });
   h+=`<button class="btn sec" onclick="addObj()">+ Ajouter un objet</button>
-  <label class="chk"><input type="checkbox" id="sReeq"> Appliquer les nouveaux % à l'argent disponible maintenant (sinon : seulement aux prochains revenus)</label>
+  <label class="chk"><input type="checkbox" id="sReeq"> Recalculer la répartition du dernier revenu avec les nouveaux % (les dépenses déjà faites sont gardées ; un objet trop dépensé passe en négatif et sera repris au prochain revenu). Sinon : seulement aux prochains revenus.</label>
   <button class="btn" onclick="saveSet()">Enregistrer les réglages</button>
   <h2>Sauvegarde</h2><div class="card"><div class="mut">Copie ce code et garde-le (notes, WhatsApp à toi-même…). Il permet de tout restaurer.</div>
   <div class="o3"><button class="btn sm" onclick="backup('file')">💾 Fichier</button><button class="btn sm" onclick="backup('copy')">Copier le code</button></div>
@@ -717,7 +728,7 @@ function readSetForm(){
   const inv=num($('#sInv').value),ref=num($('#sRef').value),ini=num($('#sInit').value);
   if(inv>=0&&inv<=100)S.investPct=inv;if(ref>=0&&ref<=100)S.refundPct=ref;if(ini>=0)S.investInit=ini;
 }
-function saveSet(){readSetForm();if($('#sReeq').checked)rebalance('Rééquilibrage (réglages)');S.lastAdjust=Date.now();save();toast('Réglages enregistrés');render()}
+function saveSet(){readSetForm();if($('#sReeq').checked)rebalance('Nouvelle répartition (réglages)');S.lastAdjust=Date.now();save();toast('Réglages enregistrés');render()}
 function addObj(){readSetForm();S.objets.push({id:uid(),nom:'Nouvel objet',pct:0,prio:3});save();render();window.scrollTo(0,document.body.scrollHeight)}
 function delObj(i){readSetForm();S.objets.splice(i,1);save();render()}
 function backup(how){S.lastBackup=Date.now();save();const j=JSON.stringify(S);if(how==='file')dl('pocket-money-sauvegarde-'+todayISO()+'.json',j,'application/json');else copyText(j)}
