@@ -117,6 +117,7 @@ function initial(m,box,inv){
     {id:'sorties',nom:'Sorties et loisirs',pct:7,prio:3},
     {id:'dons',nom:'Dons',pct:3,prio:3}
   ]};
+  if(box>0){s.tx.push({id:uid(),ts:now-1,date:todayISO(),type:'epargne',montant:r3(box),fromSolde:false,hors:false,note:"Boîte d'épargne de départ"});s.investInit=0}
   if(m>0)s.tx.push({id:uid(),ts:now,date:todayISO(),type:'revenu',montant:r3(m),hors:false,note:'Solde de départ',alloc:allocate(s,r3(m),0)});
   return s;
 }
@@ -520,11 +521,11 @@ function histHTML(){
   if(HF.f==='box')list=list.filter(t=>t.type==='depot'||t.type==='epargne');
   if(HF.o)list=list.filter(t=>(t.obj===HF.o)||(t.hors&&t.objNom===HF.o));
   const names=[...S.objets.map(o=>({v:o.id,n:o.nom})),...[...new Set(S.tx.filter(t=>t.hors&&t.objNom).map(t=>t.objNom))].map(n=>({v:n,n:n+' (hors budget)'}))];
-  let tot=0;list.forEach(t=>{if(t.type==='revenu'||t.type==='emprunt')tot+=t.montant;else if(t.type==='depense'||t.type==='rembDette')tot-=t.montant});
+  let tin=0,tout=0;list.forEach(t=>{if(t.type==='revenu'||t.type==='emprunt')tin+=t.montant;else if(t.type==='depense'||t.type==='rembDette')tout+=t.montant});
   let h=`<div class="chips">${[['all','Tout'],['in','Budget'],['out','Hors budget'],['urg','Urgences'],['det','Dettes'],['box','Épargne'],['trash','🗑 Corbeille'+((S.trash||[]).length?' ('+S.trash.length+')':'')]].map(([k,l])=>`<button class="${HF.f===k?'on':''}" onclick="HF.f='${k}';render()">${l}</button>`).join('')}</div>
   <select onchange="HF.o=this.value;render()"><option value="">Tous les objets</option>${names.map(x=>`<option value="${esc(x.v)}" ${HF.o===x.v?'selected':''}>${esc(x.n)}</option>`).join('')}</select>
   ${TR?`<div class="card alert info"><b>🗑 Corbeille</b><div class="mut">Les opérations supprimées restent ici 30 jours. ↩️ les remet dans tes calculs, ✖ les efface pour de bon.</div>${list.length?`<button class="btn sm danger" onclick="emptyTrash(this)">Vider la corbeille</button>`:''}</div>`:''}
-  <div class="card"><div class="row mut"><span>${list.length} opérations</span>${TR?'':`<span>Solde du filtre : <b style="color:var(--tx)">${fmt(tot)}</b></span>`}</div>`;
+  <div class="card"><div class="row mut"><span>${list.length} opérations</span>${TR?'':`<span>Entrées <b class="pos">+${fmt(tin)}</b> · Sorties <b class="neg">−${fmt(tout)}</b></span>`}</div>`;
   if(!list.length)h+='<div class="mut" style="padding:16px 0;text-align:center">Rien à afficher</div>';
   list.forEach(t=>{
     let label,amt;
@@ -619,7 +620,7 @@ function setHTML(){
     <button class="btn sm" onclick="setPin()">Activer le code PIN</button>`}</div>
   <div class="card"><b>🤖 Code d'ajustement de Claude</b><div class="mut">Colle ici le code que Claude t'a donné (ou ouvre directement son lien).</div><input id="majCode" placeholder="PM:transport=44;repas=24;…"><button class="btn sm" onclick="useCode()">Voir l'ajustement</button></div>
   <div class="card"><b>Investissement</b><div class="o3"><div><label>% de chaque revenu</label><input id="sInv" inputmode="decimal" value="${S.investPct}"></div><div><label>% remboursement urgence</label><input id="sRef" inputmode="decimal" value="${S.refundPct}"></div></div>
-  <label>Boîte d'épargne de départ (dt)</label><input id="sInit" inputmode="decimal" value="${S.investInit}"></div>
+  <label>Ajustement manuel de la boîte d'épargne (dt)</label><input id="sInit" inputmode="decimal" value="${S.investInit}"></div>
   <h2>Objets</h2><div class="mut" style="margin:0 4px">Total objets ${sum}% + investissement ${S.investPct}% = <b style="color:${Math.abs(tot-100)<0.01?'var(--ok)':'var(--warn)'}">${tot}%</b>${Math.abs(tot-100)<0.01?' ✔':' (idéalement 100 %)'}</div>`;
   S.objets.forEach((o,i)=>{
     const used=S.tx.some(t=>t.obj===o.id);
@@ -665,6 +666,11 @@ function resetAll(){if(!resetArm){resetArm=true;render();setTimeout(()=>{resetAr
 
 if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
 S=load();
+if(S&&+S.investInit>0){
+  const d=new Date(S.created||Date.now());d.setMinutes(d.getMinutes()-d.getTimezoneOffset());
+  S.tx.push({id:uid(),ts:(S.created||Date.now())-1,date:d.toISOString().slice(0,10),type:'epargne',montant:r3(+S.investInit),fromSolde:false,hors:false,note:"Boîte d'épargne de départ"});
+  S.investInit=0;save();
+}
 if(S&&S.pin)showLock();
 try{if(S){const q=new URLSearchParams(location.search).get('maj');if(q){PENDING=parseMaj('maj='+encodeURIComponent(q));history.replaceState(null,'',location.pathname)}}}catch(e){}
 render();
