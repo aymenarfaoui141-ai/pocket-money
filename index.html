@@ -78,6 +78,10 @@ table{width:100%;border-collapse:collapse;font-size:14px}
 .pad{display:grid;grid-template-columns:repeat(3,72px);gap:14px}
 .pad button{height:72px;border-radius:50%;border:1px solid var(--line);background:var(--card);color:var(--tx);font:inherit;font-size:24px;font-weight:600}
 .lnk{background:none;border:0;color:var(--ac);font:inherit;margin:18px 0 8px}
+#sheet{position:fixed;inset:0;z-index:15}
+.sheetbg{position:absolute;inset:0;background:rgba(0,0,0,.45)}
+.sheetin{position:absolute;left:0;right:0;bottom:0;max-height:85vh;overflow:auto;background:var(--card);border-radius:20px 20px 0 0;padding:16px 16px calc(20px + env(safe-area-inset-bottom));max-width:560px;margin:0 auto}
+.tx{cursor:pointer}
 [hidden]{display:none!important}
 </style>
 </head>
@@ -396,7 +400,7 @@ function homeHTML(){
       if(+o.cible>0){const m=Math.max(0,o.cible-e);ech+=` · objectif ${fmt(o.cible)} · manque ${fmt(m)}${dl>0&&m>0?' · ≈ '+fmt(m/dl*7)+'/semaine':''}`}
       ech+='</div>'}
     else if(+o.cible>0){ech=`<div class="mut">🎯 Objectif ${fmt(o.cible)} · manque ${fmt(Math.max(0,o.cible-e))}</div>`}
-    h+=`<div class="card"><div class="row"><b>${esc(o.nom)}</b><span>${prioBadge(o.prio)} <span class="badge">${+o.pct}%</span></span></div>
+    h+=`<div class="card" style="cursor:pointer" onclick="showObj('${o.id}')"><div class="row"><b>${esc(o.nom)}</b><span>${prioBadge(o.prio)} <span class="badge">${+o.pct}%</span></span></div>
     <div class="bar"><i style="width:${(r*100).toFixed(0)}%;background:${barColor(r)}"></i></div>
     <div class="row mut"><span>Reste <b style="color:var(--tx)">${fmt(e)}</b></span><span>Dépensé ${fmt(c.dep[o.id])} / ${fmt(a)}</span></div>${ech}</div>`;
   });
@@ -525,22 +529,84 @@ function histHTML(){
   let h=`<div class="chips">${[['all','Tout'],['in','Budget'],['out','Hors budget'],['urg','Urgences'],['det','Dettes'],['box','Épargne'],['trash','🗑 Corbeille'+((S.trash||[]).length?' ('+S.trash.length+')':'')]].map(([k,l])=>`<button class="${HF.f===k?'on':''}" onclick="HF.f='${k}';render()">${l}</button>`).join('')}</div>
   <select onchange="HF.o=this.value;render()"><option value="">Tous les objets</option>${names.map(x=>`<option value="${esc(x.v)}" ${HF.o===x.v?'selected':''}>${esc(x.n)}</option>`).join('')}</select>
   ${TR?`<div class="card alert info"><b>🗑 Corbeille</b><div class="mut">Les opérations supprimées restent ici 30 jours. ↩️ les remet dans tes calculs, ✖ les efface pour de bon.</div>${list.length?`<button class="btn sm danger" onclick="emptyTrash(this)">Vider la corbeille</button>`:''}</div>`:''}
-  <div class="card"><div class="row mut"><span>${list.length} opérations</span>${TR?'':`<span>Entrées <b class="pos">+${fmt(tin)}</b> · Sorties <b class="neg">−${fmt(tout)}</b></span>`}</div>`;
+  <div class="card"><div class="row mut"><span>${list.length} opérations</span>${TR?'':HF.f==='box'?`<span>Ajouté à la boîte <b>${fmt(list.reduce((a,t)=>a+t.montant,0))}</b></span>`:`<span>Entrées <b class="pos">+${fmt(tin)}</b> · Sorties <b class="neg">−${fmt(tout)}</b></span>`}</div>`;
   if(!list.length)h+='<div class="mut" style="padding:16px 0;text-align:center">Rien à afficher</div>';
   list.forEach(t=>{
+    const {label,amt,nt}=txInfo(t);
+    const badges=(t.hors?'<span class="badge hb">Hors budget</span> ':'')+(t.urgence?'<span class="badge urg">Urgence</span>':'');
+    h+=`<div class="tx" onclick="showTx('${t.id}')"><div class="l"><b>${label}</b><span class="mut">${fdate(t.date)}${nt?' · '+esc(nt):''}${TR?' · supprimé le '+new Date(t.deletedAt).toLocaleDateString('fr-FR'):''}</span> ${badges}</div>${amt}${TR?`<button class="del" title="Restaurer" onclick="event.stopPropagation();restoreTx('${t.id}')">↩️</button><button class="del" title="Supprimer définitivement" onclick="event.stopPropagation();purgeTx(this,'${t.id}')">✖</button>`:`<button class="del" onclick="event.stopPropagation();delTx(this,'${t.id}')">🗑</button>`}</div>`;
+  });
+  return h+'</div>';
+}
+/* ---------- fiches de détail ---------- */
+const oname=id=>{const o=objById(id);return o?o.nom:'(objet supprimé)'};
+const sgn=v=>`<b class="${v>=0?'pos':'neg'}">${v>=0?'+':'−'}${fmt(Math.abs(v))}</b>`;
+const kv=(k,v)=>`<div class="row" style="padding:5px 0;border-bottom:1px solid var(--line)"><span class="mut">${k}</span><span style="text-align:right">${v}</span></div>`;
+function openSheet(title,body){
+  let el=$('#sheet');if(!el){el=document.createElement('div');el.id='sheet';document.body.appendChild(el)}
+  el.innerHTML=`<div class="sheetbg" onclick="closeSheet()"></div><div class="sheetin"><div class="row"><b style="font-size:17px">${title}</b><button class="del" onclick="closeSheet()">✕</button></div>${body}</div>`;
+  el.hidden=false;
+}
+function closeSheet(){const el=$('#sheet');if(el)el.hidden=true}
+function showTx(id){
+  const t=S.tx.find(x=>x.id===id)||(S.trash||[]).find(x=>x.id===id);if(!t)return;
+  const {label}=txInfo(t);let b='';
+  b+=kv('Date',fdate(t.date))+kv('Montant',t.montant!=null?fmt(t.montant):'—');
+  if(t.type!=='reeq')b+=kv('Budget',t.hors?'Hors budget':'Dans le budget');
+  if(t.obj)b+=kv('Objet',esc(oname(t.obj)));
+  if(t.hors&&t.objNom)b+=kv('Objet',esc(t.objNom));
+  if(t.qui)b+=kv('Personne',esc(t.qui));
+  if(t.urgence)b+=kv('Urgence','Payée par la boîte d\'épargne');
+  if(t.note)b+=kv('Note',esc(t.note));
+  if(t.deletedAt)b+=kv('Dans la corbeille depuis',new Date(t.deletedAt).toLocaleDateString('fr-FR'));
+  const a=t.alloc;
+  if(t.type==='revenu'&&a&&!t.hors){
+    b+='<h2>Répartition</h2>';
+    for(const q in (a.dettes||{}))b+=kv('💳 Dette remboursée – '+esc(q),fmt(a.dettes[q]));
+    b+=kv(`🐷 Boîte d'épargne (${S.investPct}%)`,fmt(a.invest||0));
+    if(a.refund)b+=kv('🐷 Remboursement urgence',fmt(a.refund));
+    for(const k in (a.obj||{}))b+=kv(esc(oname(k)),fmt(a.obj[k]));
+  }
+  if(t.type==='emprunt'&&a){b+='<h2>Répartition</h2>';for(const k in a)b+=kv(esc(oname(k)),fmt(a[k]))}
+  if(t.type==='depot'){b+=kv('Demandé à ce moment',fmt(t.pourDu!=null?t.pourDu:t.montant));if(t.montant-(t.pourDu||0)>0.0005)b+=kv('En plus',fmt(t.montant-(t.pourDu||0)))}
+  if(t.type==='epargne')b+=kv('Source',t.fromSolde?'Prise sur mon solde':'Argent à part (solde inchangé)');
+  if(t.delta&&Object.keys(t.delta).length){b+=`<h2>${t.type==='reeq'?'Changements par objet':'Pris sur les objets'}</h2>`;for(const k in t.delta)b+=kv(esc(oname(k)),sgn(t.delta[k]))}
+  openSheet(label,b);
+}
+function showObj(id){
+  const o=objById(id);if(!o)return;const c=compute(S);
+  let b=kv('Priorité','P'+o.prio)+kv('Pourcentage',(+o.pct)+' %')+kv('Total reçu (alloué)',fmt(c.alloue[id]))+kv('Dépensé',fmt(c.dep[id]));
+  if(c.depUrg[id])b+=kv('Payé par la boîte (urgences)',fmt(c.depUrg[id]));
+  b+=kv('Reste',`<b>${fmt(c.eff[id])}</b>`);
+  c.transfers.filter(x=>x.to===id).forEach(x=>b+=kv('Couvert par '+esc(oname(x.from)),fmt(x.m)));
+  c.transfers.filter(x=>x.from===id).forEach(x=>b+=kv('A couvert '+esc(oname(x.to)),'−'+fmt(x.m)));
+  if(o.echeance)b+=kv('Échéance',fdate(o.echeance));
+  if(+o.cible>0)b+=kv('Objectif',fmt(o.cible));
+  const mv=[];
+  for(const t of S.tx){
+    let v=null,l='';
+    if(t.hors)continue;
+    if(t.type==='revenu'&&t.alloc&&t.alloc.obj&&t.alloc.obj[id]){v=t.alloc.obj[id];l='Part d\'un revenu'}
+    else if(t.type==='emprunt'&&t.alloc&&t.alloc[id]){v=t.alloc[id];l='Part d\'une dette reçue ('+esc(t.qui)+')'}
+    else if(t.type==='depense'&&t.obj===id){v=t.urgence?0:-t.montant;l=t.urgence?'Dépense urgence (payée par la boîte) '+fmt(t.montant):'Dépense'+(t.note?' – '+esc(t.note):'')}
+    else if(t.delta&&t.delta[id]){v=t.delta[id];l=t.type==='reeq'?'⚖️ Rééquilibrage':t.type==='rembDette'?'Remboursement dette ('+esc(t.qui)+')':'Vers la boîte d\'épargne'}
+    if(v!==null)mv.push({t,v,l});
+  }
+  mv.sort((a,b)=>b.t.ts-a.t.ts);
+  b+='<h2>Mouvements</h2>'+(mv.length?mv.map(m=>kv(`${fdate(m.t.date)} · ${m.l}`,m.v?sgn(m.v):'—')).join(''):'<div class="mut">Aucun mouvement</div>');
+  openSheet(esc(o.nom),b);
+}
+function txInfo(t){
     let label,amt;
     if(t.type==='revenu'){label=t.hors?'Revenu – '+esc(t.objNom):'Revenu';amt=`<span class="pos">+${fmt(t.montant)}</span>`}
     else if(t.type==='depense'){const o=objById(t.obj);label=esc(o?o.nom:(t.objNom||'(objet supprimé)'));amt=`<span class="neg">−${fmt(t.montant)}</span>`}
-    else if(t.type==='depot'){label='🐷 Mis dans la boîte d\'épargne';amt=`<span class="mut">${fmt(t.montant)}</span>`}
-    else if(t.type==='epargne'){label='🐷 Épargne ajoutée'+(t.fromSolde?' (depuis le solde)':' (argent à part)');amt=`<span class="mut">${fmt(t.montant)}</span>`}
+    else if(t.type==='depot'){label='🐷 Épargne ajoutée (prise sur mon solde)';amt=`<span class="mut">${fmt(t.montant)}</span>`}
+    else if(t.type==='epargne'){label='🐷 Épargne ajoutée'+(t.fromSolde?' (prise sur mon solde)':' (argent à part)');amt=`<span class="mut">${fmt(t.montant)}</span>`}
     else if(t.type==='emprunt'){label='💳 Dette reçue – '+esc(t.qui);amt=`<span class="pos">+${fmt(t.montant)}</span>`}
     else if(t.type==='rembDette'){label='💳 Remboursé – '+esc(t.qui);amt=`<span class="neg">−${fmt(t.montant)}</span>`}
     else{label='⚖️ Rééquilibrage';amt='<span class="mut">—</span>'}
     let nt=t.note||'';if(t.type==='revenu'&&t.alloc&&t.alloc.dettes&&Object.keys(t.alloc.dettes).length)nt=(nt?nt+' · ':'')+'dont remboursé : '+Object.entries(t.alloc.dettes).map(([q,v])=>q+' '+fmt(v)).join(', ');
-    const badges=(t.hors?'<span class="badge hb">Hors budget</span> ':'')+(t.urgence?'<span class="badge urg">Urgence</span>':'');
-    h+=`<div class="tx"><div class="l"><b>${label}</b><span class="mut">${fdate(t.date)}${nt?' · '+esc(nt):''}${TR?' · supprimé le '+new Date(t.deletedAt).toLocaleDateString('fr-FR'):''}</span> ${badges}</div>${amt}${TR?`<button class="del" title="Restaurer" onclick="restoreTx('${t.id}')">↩️</button><button class="del" title="Supprimer définitivement" onclick="purgeTx(this,'${t.id}')">✖</button>`:`<button class="del" onclick="delTx(this,'${t.id}')">🗑</button>`}</div>`;
-  });
-  return h+'</div>';
+    return {label,amt,nt};
 }
 function delTx(btn,id){
   if(!btn.classList.contains('confirm')){btn.classList.add('confirm');btn.textContent='Supprimer ?';setTimeout(()=>{if(btn.isConnected){btn.classList.remove('confirm');btn.textContent='🗑'}},3000);return}
