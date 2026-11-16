@@ -510,7 +510,9 @@ function saveTx(){
 /* Historique */
 let HF={f:'all',o:''};
 function histHTML(){
-  let list=[...S.tx].sort((a,b)=>b.ts-a.ts);
+  purgeOld();
+  const TR=HF.f==='trash';
+  let list=[...(TR?(S.trash||[]):S.tx)].sort((a,b)=>TR?b.deletedAt-a.deletedAt:b.ts-a.ts);
   if(HF.f==='in')list=list.filter(t=>!t.hors);
   if(HF.f==='out')list=list.filter(t=>t.hors);
   if(HF.f==='urg')list=list.filter(t=>t.urgence);
@@ -519,9 +521,10 @@ function histHTML(){
   if(HF.o)list=list.filter(t=>(t.obj===HF.o)||(t.hors&&t.objNom===HF.o));
   const names=[...S.objets.map(o=>({v:o.id,n:o.nom})),...[...new Set(S.tx.filter(t=>t.hors&&t.objNom).map(t=>t.objNom))].map(n=>({v:n,n:n+' (hors budget)'}))];
   let tot=0;list.forEach(t=>{if(t.type==='revenu'||t.type==='emprunt')tot+=t.montant;else if(t.type==='depense'||t.type==='rembDette')tot-=t.montant});
-  let h=`<div class="chips">${[['all','Tout'],['in','Budget'],['out','Hors budget'],['urg','Urgences'],['det','Dettes'],['box','Épargne']].map(([k,l])=>`<button class="${HF.f===k?'on':''}" onclick="HF.f='${k}';render()">${l}</button>`).join('')}</div>
+  let h=`<div class="chips">${[['all','Tout'],['in','Budget'],['out','Hors budget'],['urg','Urgences'],['det','Dettes'],['box','Épargne'],['trash','🗑 Corbeille'+((S.trash||[]).length?' ('+S.trash.length+')':'')]].map(([k,l])=>`<button class="${HF.f===k?'on':''}" onclick="HF.f='${k}';render()">${l}</button>`).join('')}</div>
   <select onchange="HF.o=this.value;render()"><option value="">Tous les objets</option>${names.map(x=>`<option value="${esc(x.v)}" ${HF.o===x.v?'selected':''}>${esc(x.n)}</option>`).join('')}</select>
-  <div class="card"><div class="row mut"><span>${list.length} opérations</span><span>Solde du filtre : <b style="color:var(--tx)">${fmt(tot)}</b></span></div>`;
+  ${TR?`<div class="card alert info"><b>🗑 Corbeille</b><div class="mut">Les opérations supprimées restent ici 30 jours. ↩️ les remet dans tes calculs, ✖ les efface pour de bon.</div>${list.length?`<button class="btn sm danger" onclick="emptyTrash(this)">Vider la corbeille</button>`:''}</div>`:''}
+  <div class="card"><div class="row mut"><span>${list.length} opérations</span>${TR?'':`<span>Solde du filtre : <b style="color:var(--tx)">${fmt(tot)}</b></span>`}</div>`;
   if(!list.length)h+='<div class="mut" style="padding:16px 0;text-align:center">Rien à afficher</div>';
   list.forEach(t=>{
     let label,amt;
@@ -534,14 +537,31 @@ function histHTML(){
     else{label='⚖️ Rééquilibrage';amt='<span class="mut">—</span>'}
     let nt=t.note||'';if(t.type==='revenu'&&t.alloc&&t.alloc.dettes&&Object.keys(t.alloc.dettes).length)nt=(nt?nt+' · ':'')+'dont remboursé : '+Object.entries(t.alloc.dettes).map(([q,v])=>q+' '+fmt(v)).join(', ');
     const badges=(t.hors?'<span class="badge hb">Hors budget</span> ':'')+(t.urgence?'<span class="badge urg">Urgence</span>':'');
-    h+=`<div class="tx"><div class="l"><b>${label}</b><span class="mut">${fdate(t.date)}${nt?' · '+esc(nt):''}</span> ${badges}</div>${amt}<button class="del" onclick="delTx(this,'${t.id}')">🗑</button></div>`;
+    h+=`<div class="tx"><div class="l"><b>${label}</b><span class="mut">${fdate(t.date)}${nt?' · '+esc(nt):''}${TR?' · supprimé le '+new Date(t.deletedAt).toLocaleDateString('fr-FR'):''}</span> ${badges}</div>${amt}${TR?`<button class="del" title="Restaurer" onclick="restoreTx('${t.id}')">↩️</button><button class="del" title="Supprimer définitivement" onclick="purgeTx(this,'${t.id}')">✖</button>`:`<button class="del" onclick="delTx(this,'${t.id}')">🗑</button>`}</div>`;
   });
   return h+'</div>';
 }
 function delTx(btn,id){
   if(!btn.classList.contains('confirm')){btn.classList.add('confirm');btn.textContent='Supprimer ?';setTimeout(()=>{if(btn.isConnected){btn.classList.remove('confirm');btn.textContent='🗑'}},3000);return}
-  S.tx=S.tx.filter(t=>t.id!==id);save();toast('Supprimé');render();
+  const t=S.tx.find(x=>x.id===id);if(!t)return;
+  S.tx=S.tx.filter(x=>x.id!==id);S.trash=S.trash||[];S.trash.push({...t,deletedAt:Date.now()});
+  save();toast('Mis dans la corbeille 🗑');render();
 }
+function restoreTx(id){
+  const t=(S.trash||[]).find(x=>x.id===id);if(!t)return;
+  S.trash=S.trash.filter(x=>x.id!==id);const r={...t};delete r.deletedAt;S.tx.push(r);
+  if(r.obj&&!objById(r.obj))r.obj=(impObj()||{}).id;
+  save();toast('Opération restaurée ↩️');render();
+}
+function purgeTx(btn,id){
+  if(!btn.classList.contains('confirm')){btn.classList.add('confirm');btn.textContent='Effacer ?';setTimeout(()=>{if(btn.isConnected){btn.classList.remove('confirm');btn.textContent='✖'}},3000);return}
+  S.trash=(S.trash||[]).filter(x=>x.id!==id);save();toast('Effacé définitivement');render();
+}
+function emptyTrash(btn){
+  if(!btn.dataset.armed){btn.dataset.armed='1';btn.textContent='Appuie encore pour tout effacer';setTimeout(()=>{if(btn.isConnected){delete btn.dataset.armed;btn.textContent='Vider la corbeille'}},4000);return}
+  S.trash=[];save();toast('Corbeille vidée');render();
+}
+function purgeOld(){if(!S.trash||!S.trash.length)return;const n=S.trash.length;S.trash=S.trash.filter(t=>Date.now()-t.deletedAt<30*DAY);if(S.trash.length!==n)save()}
 
 /* Analyse */
 function statsHTML(){
