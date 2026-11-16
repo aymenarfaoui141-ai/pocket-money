@@ -150,12 +150,16 @@ function allocate(s,m,dette,remb,outs){
 function compute(s){
   const raw={},alloue={},dep={},depUrg={};
   s.objets.forEach(o=>{raw[o.id]=0;alloue[o.id]=0;dep[o.id]=0;depUrg[o.id]=0});
-  let boite=+s.investInit||0,aMettre=0,dette=0,urgTot=0;
+  let boite=+s.investInit||0,aMettre=0,dette=0,urgTot=0,theo=0;
   const debts={},first={};
   const fallback=(s.objets.find(o=>o.imprevu)||s.objets[0]||{}).id;
   const add=(k,v,al)=>{const id=(k in raw)?k:fallback;if(id){raw[id]+=v;if(al)alloue[id]+=v}};
   for(const t of [...s.tx].sort((a,b)=>a.ts-b.ts)){
     if(t.hors)continue;
+    if(t.type==='revenu')theo+=t.montant-Object.values((t.alloc&&t.alloc.dettes)||{}).reduce((x,y)=>x+y,0);
+    else if(t.type==='depense'&&!t.urgence)theo-=t.montant;
+    else if(t.type==='depot'||t.type==='rembDette'||(t.type==='epargne'&&t.fromSolde))theo-=t.montant;
+    else if(t.type==='emprunt')theo+=t.montant;
     if(t.type==='revenu'){
       const a=t.alloc||{invest:0,refund:0,obj:{}};
       for(const k in a.obj)add(k,a.obj[k],true);
@@ -171,6 +175,8 @@ function compute(s){
     else if(t.type==='rembDette'){for(const k in (t.delta||{}))add(k,t.delta[k],false);debts[t.qui]=(debts[t.qui]||0)-t.montant}
   }
   aMettre=Math.max(0,r3(aMettre));
+  {const cur=Object.values(raw).reduce((a,b)=>a+b,0)+aMettre,corr=r3(theo-cur);
+   if(corr!==0&&Math.abs(corr)<0.05&&fallback)raw[fallback]=r3(raw[fallback]+corr)}
   const dettesList=Object.keys(debts).filter(q=>debts[q]>0.0005).sort((a,b)=>(first[a]||0)-(first[b]||0)).map(q=>[q,r3(debts[q])]);
   const detteExt=r3(dettesList.reduce((a,x)=>a+x[1],0));
   const invest=boite;
@@ -209,10 +215,17 @@ function suggestion(){
   return sug;
 }
 
+function fixSum(delta,target){
+  const ks=Object.keys(delta);if(!ks.length)return delta;
+  const d=r3(target-ks.reduce((a,k)=>a+delta[k],0));
+  if(d!==0){const k=ks.sort((a,b)=>Math.abs(delta[b])-Math.abs(delta[a]))[0];delta[k]=r3(delta[k]+d)}
+  return delta;
+}
 function rebalance(note){
   const c=compute(S);if(c.dispo<=0)return false;
   const sum=sumPct(S);if(sum<=0)return false;
   const delta={};S.objets.forEach(o=>{delta[o.id]=r3(c.dispo*(+o.pct||0)/sum-c.raw[o.id])});
+  fixSum(delta,0);
   S.tx.push({id:uid(),ts:Date.now(),date:todayISO(),type:'reeq',delta,hors:false,note:note||'Rééquilibrage du disponible'});
   return true;
 }
@@ -221,7 +234,7 @@ function takeFrom(m){
   const c=compute(S),pos=S.objets.filter(o=>c.raw[o.id]>0),tot=pos.reduce((a,o)=>a+c.raw[o.id],0),delta={};let left=m;
   if(tot>0){const take=Math.min(m,tot);pos.forEach(o=>{delta[o.id]=-r3(take*c.raw[o.id]/tot)});left=r3(m-take)}
   if(left>0.0005){const i=impObj();if(i)delta[i.id]=r3((delta[i.id]||0)-left)}
-  return delta;
+  return fixSum(delta,-r3(m));
 }
 function saveDepot(){
   const m=r3(num($('#depM').value));if(!(m>0)){toast('Entre un montant valide');return}
