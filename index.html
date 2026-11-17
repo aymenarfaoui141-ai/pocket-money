@@ -453,7 +453,6 @@ function addHTML(){
   <div id="bHors"><label>Ça compte dans le budget ?</label>
   <div class="seg" id="segHors"><button data-v="0" class="${!F.hors?'on':''}">Dans le budget</button><button data-v="1" class="${F.hors?'on':''}">Hors budget</button></div></div>
   <div id="bObj"><label>Objet</label><select id="fObj">${opts}<option value="__new">+ Nouvel objet…</option></select></div>
-  <div id="bDesc" hidden><label>Quoi exactement ?</label><input id="fDesc" list="dlDesc" placeholder="ex. Pharmacie, chargeur, photocopie…"><datalist id="dlDesc">${[...new Set(S.tx.filter(t=>t.desc).map(t=>t.desc))].map(n=>`<option value="${esc(n)}">`).join('')}</datalist></div>
   <div id="bNew" hidden><label>Nom du nouvel objet</label><input id="fNewNom" placeholder="ex. Cadeau, Livre…">
     <label>Priorité</label><select id="fNewPrio"><option value="1">1 – essentiel</option><option value="2" selected>2 – important</option><option value="3">3 – plaisir</option></select>
     <div class="mut" style="margin-top:6px">Il démarre à 0 % : la dépense sera couverte par « Imprévus ». Tu pourras lui donner un % dans Réglages.</div></div>
@@ -472,7 +471,7 @@ function bindAdd(){
     if(!$('#bRemb').hidden&&!$('#fRembM').dataset.touched){const mm=num($('#fM').value);$('#fRembM').value=r3(Math.min(c0.detteExt,mm>0?mm:c0.detteExt)).toFixed(3)}
     if(dt){const q=$('#fQui').value.trim(),d=c0.dettesList.find(x=>x[0]===q);$('#quiInfo').textContent=c0.dettesList.length?'Dettes en cours : '+c0.dettesList.map(([n,v])=>n+' '+fmt(v)).join(' · '):'Aucune dette en cours.';if(F.dsub==='remb'&&d&&!$('#fM').value)$('#fM').value=d[1].toFixed(3)}
     $('#bObj').hidden=!(dep&&inB);
-    {const so=objById($('#fObj').value);$('#bDesc').hidden=!(dep&&inB&&so&&so.imprevu)}
+
     $('#bNew').hidden=!(dep&&inB&&$('#fObj').value==='__new');
     $('#bHorsNom').hidden=inB||dt||ep;
     $('#bUrg').hidden=!(dep&&inB);
@@ -527,7 +526,7 @@ function saveTx(){
       if(ex)id=ex.id;else{id=uid();S.objets.push({id,nom:n,pct:0,prio:+$('#fNewPrio').value})}
     }
     t.obj=id;t.objNom=objById(id).nom;
-    if(objById(id).imprevu){const d=$('#fDesc').value.trim();if(!d){toast('Précise ce que tu as acheté');return}t.desc=d}
+
     if($('#fUrg').checked){t.urgence=true;msg="Pris dans l'investissement — remboursement automatique"}
   }
   S.tx.push(t);save();
@@ -668,9 +667,9 @@ function statsHTML(){
   h+=`</table><div class="mut" style="margin-top:8px">Le « réel » est ramené sur les ${sum}% des objets (l'investissement reste à ${S.investPct}%).</div></div>`;
   // hors budget
   const hb={};S.tx.filter(t=>t.hors).forEach(t=>{const k=t.objNom||'?';hb[k]=hb[k]||{dep:0,rev:0,n:0};hb[k][t.type==='revenu'?'rev':'dep']+=t.montant;hb[k].n++});
-  const im={};S.tx.filter(t=>t.type==='depense'&&!t.hors&&t.desc).forEach(t=>{im[t.desc]=im[t.desc]||{m:0,n:0};im[t.desc].m+=t.montant;im[t.desc].n++});
+  const im={};S.tx.filter(t=>t.type==='depense'&&!t.hors&&(objById(t.obj)||{}).imprevu).forEach(t=>{const k=t.desc||t.note||'(sans note)';im[k]=im[k]||{m:0,n:0};im[k].m+=t.montant;im[k].n++});
   const ik=Object.keys(im).sort((a,b)=>im[b].m-im[a].m);
-  h+=`<div class="card"><b>Détail des imprévus</b>${ik.length?'<table style="margin-top:8px"><tr class="mut"><td>Quoi</td><td>Fois</td><td>Total</td></tr>'+ik.map(k=>`<tr><td>${esc(k)}</td><td>${im[k].n}</td><td>${fmt(im[k].m)}</td></tr>`).join('')+'</table><div class="mut" style="margin-top:6px">Si un imprévu revient souvent, il mérite peut-être son propre objet.</div>':'<div class="mut">Aucun imprévu détaillé pour l\'instant.</div>'}</div>`;
+  h+=`<div class="card"><b>Détail des imprévus</b>${ik.length?'<table style="margin-top:8px"><tr class="mut"><td>Quoi</td><td>Fois</td><td>Total</td></tr>'+ik.map(k=>`<tr><td>${esc(k)}</td><td>${im[k].n}</td><td>${fmt(im[k].m)}</td></tr>`).join('')+'</table><div class="mut" style="margin-top:6px">Si un imprévu revient souvent, il mérite peut-être son propre objet.</div>':'<div class="mut">Aucun imprévu pour l\'instant. Ajoute une note quand tu déclares un imprévu pour le retrouver ici.</div>'}</div>`;
   h+=`<div class="card"><b>Hors budget (pour ton futur programme)</b>`;
   const ks=Object.keys(hb);
   if(!ks.length)h+='<div class="mut">Aucune opération hors budget pour l\'instant.</div>';
