@@ -396,7 +396,7 @@ function homeHTML(){
       const fr=c.transfers.filter(t=>t.to===o.id).map(t=>esc(objById(t.from).nom)+' ('+fmt(t.m)+')').join(', ');
       const cov=c.eff[o.id]>-0.0005;
       if(cov&&!(+o.pct>0))return;
-      al.push(`<div class="card alert ${cov?'':'bad'}"><b>${esc(o.nom)} : dépassé de ${fmt(-c.raw[o.id])}</b><div class="mut">${fr?'Couvert par : '+fr:'Non couvert'}</div></div>`);
+      al.push(`<div class="card alert ${cov?'':'bad'}"><b>${esc(o.nom)} : dépassé de ${fmt(-c.raw[o.id])}</b><div class="mut">${fr?'Bloqué en attendant sur : '+fr+'. ':'Non couvert. '}Repris automatiquement au prochain revenu.</div></div>`);
     }else if(a>0&&d/a>=0.8)al.push(`<div class="card alert"><b>${esc(o.nom)} : ${Math.round(d/a*100)}% utilisé</b><div class="mut">Reste ${fmt(c.raw[o.id])}</div></div>`);
   });
   if(S.tx.length>4&&Date.now()-(S.lastBackup||S.created)>7*DAY)al.push(`<div class="card alert info"><b>💾 Pense à faire une sauvegarde</b><div class="mut">Réglages → Sauvegarde. Ça protège tes données si le navigateur est vidé.</div></div>`);
@@ -412,9 +412,19 @@ function homeHTML(){
     else if(+o.cible>0){ech=`<div class="mut">🎯 Objectif ${fmt(o.cible)} · manque ${fmt(Math.max(0,o.cible-e))}</div>`}
     h+=`<div class="card" style="cursor:pointer" onclick="showObj('${o.id}')"><div class="row"><b>${esc(o.nom)}</b><span>${prioBadge(o.prio)} <span class="badge">${+o.pct}%</span></span></div>
     <div class="bar"><i style="width:${(r*100).toFixed(0)}%;background:${barColor(r)}"></i></div>
-    <div class="row mut"><span>Reste <b style="color:var(--tx)">${fmt(e)}</b></span><span>Dépensé ${fmt(c.dep[o.id])} / ${fmt(a)}</span></div>${ech}</div>`;
+    <div class="row mut"><span>Reste <b style="color:${c.raw[o.id]<-0.0005?'var(--bad)':'var(--tx)'}">${fmt(c.raw[o.id])}</b></span><span>Dépensé ${fmt(c.dep[o.id])} / ${fmt(a)}</span></div>${coverNote(c,o.id)}${ech}</div>`;
   });
   h+=`<button class="btn" onclick="go('add')">+ Déclarer une dépense ou un revenu</button>`;
+  return h;
+}
+function coverNote(c,id){
+  const lent=c.transfers.filter(t=>t.from===id),got=c.transfers.filter(t=>t.to===id);
+  let h='';
+  if(got.length){const tot=got.reduce((a,t)=>a+t.m,0),rest=-c.eff[id];
+    h+=`<div class="mut" style="color:var(--bad)">🔴 Dépassé : ${fmt(tot)} bloqués sur ${got.map(t=>esc(objById(t.from).nom)).join(', ')}${rest>0.0005?' · '+fmt(rest)+' non couverts':''}. Repris au prochain revenu.</div>`}
+  else if(c.raw[id]<-0.0005)h+=`<div class="mut" style="color:var(--bad)">🔴 Dépassé, non couvert. Repris au prochain revenu.</div>`;
+  if(lent.length){const tot=lent.reduce((a,t)=>a+t.m,0);
+    h+=`<div class="mut" style="color:var(--warn)">🔒 ${fmt(tot)} bloqués pour couvrir ${lent.map(t=>esc(objById(t.to).nom)).join(', ')} · utilisable : <b>${fmt(c.eff[id])}</b></div>`}
   return h;
 }
 function acceptSug(){
@@ -592,9 +602,10 @@ function showObj(id){
   const o=objById(id);if(!o)return;const c=compute(S);
   let b=kv('Priorité','P'+o.prio)+kv('Pourcentage',(+o.pct)+' %')+kv('Total reçu (alloué)',fmt(c.alloue[id]))+kv('Dépensé',fmt(c.dep[id]));
   if(c.depUrg[id])b+=kv('Payé par la boîte (urgences)',fmt(c.depUrg[id]));
-  b+=kv('Reste',`<b>${fmt(c.eff[id])}</b>`);
-  c.transfers.filter(x=>x.to===id).forEach(x=>b+=kv('Couvert par '+esc(oname(x.from)),fmt(x.m)));
-  c.transfers.filter(x=>x.from===id).forEach(x=>b+=kv('A couvert '+esc(oname(x.to)),'−'+fmt(x.m)));
+  b+=kv('Reste',`<b style="color:${c.raw[id]<0?'var(--bad)':'inherit'}">${fmt(c.raw[id])}</b>`);
+  if(Math.abs(c.eff[id]-c.raw[id])>0.0005)b+=kv(c.raw[id]<0?'Après couverture':'Utilisable (après blocage)',fmt(c.eff[id]));
+  c.transfers.filter(x=>x.to===id).forEach(x=>b+=kv('Bloqué sur '+esc(oname(x.from)),fmt(x.m)));
+  c.transfers.filter(x=>x.from===id).forEach(x=>b+=kv('Bloqué pour couvrir '+esc(oname(x.to)),'−'+fmt(x.m)));
   if(o.echeance)b+=kv('Échéance',fdate(o.echeance));
   if(+o.cible>0)b+=kv('Objectif',fmt(o.cible));
   const mv=[];
