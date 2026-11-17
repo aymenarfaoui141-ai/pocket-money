@@ -348,6 +348,7 @@ function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('show');cl
 function go(t){tab=t;document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('on',b.dataset.tab===t));render();window.scrollTo(0,0)}
 document.querySelector('nav').addEventListener('click',e=>{const b=e.target.closest('button');if(b)go(b.dataset.tab)});
 const prioBadge=p=>`<span class="badge p${p}">P${p}</span>`;
+function useColor(u){return u>=1?'var(--bad)':u>=0.8?'var(--warn)':'var(--ok)'}
 function barColor(r){return r>0.5?'var(--ok)':r>0.2?'var(--warn)':'var(--bad)'}
 async function copyText(txt,ta){
   try{await navigator.clipboard.writeText(txt);toast('Copié ✔ — colle-le dans Claude');return true}
@@ -403,7 +404,7 @@ function homeHTML(){
   if(al.length)h+='<h2>Alertes</h2>'+al.join('');
   h+='<h2>Mes objets</h2>';
   [...S.objets].sort((a,b)=>a.prio-b.prio||b.pct-a.pct).forEach(o=>{
-    const a=c.alloue[o.id],e=c.eff[o.id],r=a>0?Math.max(0,Math.min(1,e/a)):(e>0?1:0);
+    const a=c.alloue[o.id],e=c.eff[o.id],used=a>0?c.dep[o.id]/a:(c.dep[o.id]>0?1:0),r=Math.max(0,Math.min(1,used));
     let ech='';
     if(o.echeance){const dl=Math.ceil((new Date(o.echeance+'T23:59')-Date.now())/DAY);
       ech=`<div class="mut">⏳ Échéance ${fdate(o.echeance)} (${dl>=0?dl+' j':'dépassée'})`;
@@ -411,7 +412,7 @@ function homeHTML(){
       ech+='</div>'}
     else if(+o.cible>0){ech=`<div class="mut">🎯 Objectif ${fmt(o.cible)} · manque ${fmt(Math.max(0,o.cible-e))}</div>`}
     h+=`<div class="card" style="cursor:pointer" onclick="showObj('${o.id}')"><div class="row"><b>${esc(o.nom)}</b><span>${prioBadge(o.prio)} <span class="badge">${+o.pct}%</span></span></div>
-    <div class="bar"><i style="width:${(r*100).toFixed(0)}%;background:${barColor(r)}"></i></div>
+    <div class="bar"><i style="width:${(r*100).toFixed(0)}%;background:${useColor(used)}"></i></div>
     <div class="row mut"><span>Reste <b style="color:${c.raw[o.id]<-0.0005?'var(--bad)':'var(--tx)'}">${fmt(c.raw[o.id])}</b></span><span>Dépensé ${fmt(c.dep[o.id])} / ${fmt(a)}</span></div>${coverNote(c,o.id)}${ech}</div>`;
   });
   h+=`<button class="btn" onclick="go('add')">+ Déclarer une dépense ou un revenu</button>`;
