@@ -208,8 +208,9 @@ function perDay(){
 }
 
 function suggestion(){
-  if(Date.now()-S.lastAdjust<7*DAY)return null;
-  const deps=S.tx.filter(t=>t.type==='depense'&&!t.hors&&t.ts>=S.lastAdjust);
+  const since=S.lastSug||S.created||0;
+  if(Date.now()-since<7*DAY)return null;
+  const deps=S.tx.filter(t=>t.type==='depense'&&!t.hors&&!t.urgence&&t.ts>=since);
   if(deps.length<5)return null;
   const tot=deps.reduce((a,t)=>a+t.montant,0);if(tot<=0)return null;
   const sum=sumPct(S),by={};deps.forEach(t=>by[t.obj]=(by[t.obj]||0)+t.montant);
@@ -338,7 +339,7 @@ function applyPending(){
   for(const id in PENDING.pct){const o=objById(id);if(o)o.pct=PENDING.pct[id]}
   if(PENDING.inv!=null)S.investPct=PENDING.inv;
   if($('#pReeq')&&$('#pReeq').checked)rebalance("Nouvelle répartition (ajustement Claude)");
-  S.lastAdjust=Date.now();PENDING=null;save();toast('Ajustement appliqué ✔');render();
+  S.lastAdjust=S.lastSug=Date.now();PENDING=null;save();toast('Ajustement appliqué ✔');render();
 }
 function useCode(){const p=parseMaj($('#majCode').value);if(!p){toast('Code non reconnu');return}PENDING=p;go('home')}
 
@@ -384,6 +385,8 @@ function homeHTML(){
     ${c.dettesList.map(([q,v])=>`<div class="row mut"><span>${esc(q)}</span><span>${fmt(v)}</span></div>`).join('')}
     <div class="mut" style="margin-top:6px">Le remboursement te sera proposé à ton prochain revenu.</div></div>`;
   h=pendingHTML()+h;
+  {const le=S.lastExport||S.created||0,dow=new Date().getDay(),age=Date.now()-le;
+   if(age>2*DAY&&(dow===0||age>7*DAY))h+=`<div class="card alert info"><b>📅 Point de la semaine avec Claude</b><div class="mut">Envoie ton export pour qu'on ajuste tes pourcentages.</div><button class="btn sm" onclick="shareExport().then(render)">📤 Partager vers Claude</button></div>`;}
   const sug=PENDING?null:suggestion();
   if(sug)h+=`<div class="card alert info"><b>📈 Suggestion après 7 jours</b><div class="mut">D'après ta vraie consommation :</div>
     <table class="sugg">${sug.map(x=>`<tr><td>${esc(x.nom)}</td><td class="mut">${x.cur}%</td><td>→ <b>${x.sug}%</b></td></tr>`).join('')}</table>
@@ -433,9 +436,9 @@ function acceptSug(){
   sug.forEach(x=>{const o=objById(x.id);if(o)o.pct=x.sug});
   const re=$('#sugReeq')&&$('#sugReeq').checked;
   if(re)rebalance('Nouvelle répartition (suggestion acceptée)');
-  S.lastAdjust=Date.now();save();toast('Pourcentages mis à jour');render();
+  S.lastAdjust=S.lastSug=Date.now();save();toast('Pourcentages mis à jour');render();
 }
-function ignoreSug(){S.lastAdjust=Date.now();save();toast('Suggestion ignorée pour 7 jours');render()}
+function ignoreSug(){S.lastSug=Date.now();save();toast('Suggestion ignorée pour 7 jours');render()}
 
 /* Déclarer */
 const F={type:'depense',hors:false};
@@ -678,7 +681,7 @@ function statsHTML(){
   h+='</div>';
   h+=`<div class="card"><b>🤖 Export pour Claude</b><div class="mut">Copie ce texte et colle-le dans la conversation pour que j'analyse ta consommation et ajuste les pourcentages.</div>
   <button class="btn" onclick="shareExport()">📤 Partager vers Claude</button>
-  <div class="o3"><button class="btn sm sec" onclick="copyText(exportText())">Copier</button><button class="btn sm sec" onclick="dl('pocket-money-export-'+todayISO()+'.txt',exportText(),'text/plain')">Fichier .txt</button></div>
+  <div class="o3"><button class="btn sm sec" onclick="markExport();copyText(exportText())">Copier</button><button class="btn sm sec" onclick="markExport();dl('pocket-money-export-'+todayISO()+'.txt',exportText(),'text/plain')">Fichier .txt</button></div>
   <details style="margin-top:10px"><summary class="mut">Voir le texte</summary><textarea id="exp" readonly>${esc(exportText())}</textarea></details></div>`;
   return h;
 }
@@ -751,7 +754,8 @@ function addObj(){readSetForm();S.objets.push({id:uid(),nom:'Nouvel objet',pct:0
 function delObj(i){readSetForm();S.objets.splice(i,1);save();render()}
 function backup(how){S.lastBackup=Date.now();save();const j=JSON.stringify(S);if(how==='file')dl('pocket-money-sauvegarde-'+todayISO()+'.json',j,'application/json');else copyText(j)}
 function dl(name,txt,type){try{const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([txt],{type}));a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),4000);toast('Fichier enregistré dans Téléchargements')}catch(e){toast('Téléchargement impossible ici')}}
-async function shareExport(){const t=exportText();if(navigator.share){try{await navigator.share({title:'Export Pocket Money',text:t});return}catch(e){if(e&&e.name==='AbortError')return}}copyText(t)}
+function markExport(){S.lastExport=Date.now();save()}
+async function shareExport(){markExport();const t=exportText();if(navigator.share){try{await navigator.share({title:'Export Pocket Money',text:t});return}catch(e){if(e&&e.name==='AbortError')return}}copyText(t)}
 function importFile(inp){const f=inp.files&&inp.files[0];if(!f)return;f.text().then(txt=>{$('#imp').value=txt;importBk()})}
 function importBk(){
   try{const d=JSON.parse($('#imp').value);if(!Array.isArray(d.objets)||!Array.isArray(d.tx))throw 0;S=d;save();toast('Données restaurées ✔');go('home')}
