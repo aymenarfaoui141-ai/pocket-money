@@ -773,6 +773,16 @@ if(S&&+S.investInit>0){
 if(S&&S.pin)showLock();
 try{if(S){const q=new URLSearchParams(location.search).get('maj');if(q){PENDING=parseMaj('maj='+encodeURIComponent(q));history.replaceState(null,'',location.pathname)}}}catch(e){}
 render();
+// Ajustements publiés par Claude (maj.json) : appliqués automatiquement une seule fois
+fetch('maj.json?'+Date.now(),{cache:'no-store'}).then(r=>r.ok?r.json():null).then(m=>{
+  if(!S||!m||!m.id||S.lastMajId===m.id)return;
+  if((S.created||0)>(m.since||0)){S.lastMajId=m.id;save();return}
+  let ch=false;for(const id in (m.pct||{})){const o=objById(id);if(o&&+o.pct!==+m.pct[id]){o.pct=+m.pct[id];ch=true}}
+  if(m.invest!=null&&+S.investPct!==+m.invest){S.investPct=+m.invest;ch=true}
+  S.lastMajId=m.id;
+  if(ch){rebalance('Nouvelle répartition (Claude, '+m.id+')');S.lastAdjust=S.lastSug=Date.now()}
+  save();if(ch){toast('🤖 Pourcentages mis à jour par Claude');render()}
+}).catch(()=>{});
 </script>
 </body>
 </html>
